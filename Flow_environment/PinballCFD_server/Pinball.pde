@@ -44,7 +44,7 @@ class Pinball {
   }
 
 
- void update2(){
+void update2(){
   //dt = flow.checkCFL();
   flow.dt = dt;
   force_0.x = xi0;
@@ -63,9 +63,12 @@ class Pinball {
   vel.z = body.bodyList.get(3).dotphi;
   pos = body.bodyList.get(3).xc;
   pos.z = body.bodyList.get(3).phi;
-
-  surfacePressures = body.bodyList.get(3).calculateSurfacePressures(flow.p);
+  // 计算表面压力
   // 处理 surfacePressures 列表中的数据
+  surfacePressures = body.bodyList.get(3).calculateSurfacePressures(flow.p);
+
+  //flow.u中存储速度信息
+  //println("Flow velocity at target [88][64]: " + flow.u.x.a[88][64] + ", " + flow.u.y.a[88][64]);
  }
 
   void display(float targetx, float targety) {

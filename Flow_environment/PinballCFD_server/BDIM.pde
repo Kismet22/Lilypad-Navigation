@@ -32,8 +32,9 @@ void draw(){
 *********************************************************/
 class BDIM{
   int n,m; // number of cells in uniform grid
-  float t=0, dt, nu, eps=2.0;
+  float t=0, dt, nu, eps=2.0;//nu:流体粘度系数、eps：光滑参数
   PVector g= new PVector(0,0);
+  // VectorField u中保存了流场的速度场信息
   VectorField u,del,del1,c,u0,ub,wnx,wny,distance,rhoi;
   Field p;
   boolean QUICK, mu1=true, adaptive=false;

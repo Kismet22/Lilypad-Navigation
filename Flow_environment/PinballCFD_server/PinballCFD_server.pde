@@ -54,11 +54,14 @@ float[] action = new float[3];
 float reward_buffer = 0;
 Boolean done = false;
 int reset_flag = 0;
+private float[][] flowVelocityX;
+private float[][] flowVelocityY;
 PVector target = new PVector(150,100);
 
 // Semaphore to provide asynchronization
 Semaphore action_sem = new Semaphore(0);
 Semaphore state_sem = new Semaphore(0);
+
 
 void settings()
 {
@@ -95,9 +98,14 @@ void draw() {
   test.xi1 = nextactionB;
   test.xi2 = nextactionC;
 
-  // 更新仿真环境状态
+  // 更新仿真环境状态并获取流场速度
+  // 322 * 130
   test.update2();
-  
+  // 记录单步流场速度
+  //println("Type of test.flow.u.x.a: " + test.flow.u.x.a.getClass());
+  flowVelocityX = test.flow.u.x.a;
+  flowVelocityY = test.flow.u.y.a;
+
   // 获取当前位置、速度和表面压力
   pos = test.pos;
   vel = test.vel;
@@ -107,6 +115,9 @@ void draw() {
   // 更新状态
   state.clear();
   state.add(state_cn);
+  // 传输流场速度信息
+  // flowVelocityjson = flowFieldToJson(flowVelocity);
+
   // 释放状态信号量，通知其他线程状态已更新
   state_sem.release();
 }
@@ -187,6 +198,8 @@ public class serverHandler {
 
         // 构造输出数据，仅返回状态
         output_object.put("state", state);
+        output_object.put("flow_u", flowVelocityX);
+        output_object.put("flow_v", flowVelocityY);
 
         return output_object.toJSONString();
     }
@@ -195,6 +208,8 @@ public class serverHandler {
         JSONObject output_object = new JSONObject();
         // 仅返回当前状态
         output_object.put("state", state);
+        output_object.put("flow_u", flowVelocityX);
+        output_object.put("flow_v", flowVelocityY);
         return output_object.toJSONString();
     }
 
@@ -224,6 +239,8 @@ public class serverHandler {
 
         // 构造输出数据，仅返回状态
         output_object.put("state", state);
+        output_object.put("flow_u", flowVelocityX);
+        output_object.put("flow_v", flowVelocityY);
         println("complete reset");
         return output_object.toJSONString();
     }
@@ -248,6 +265,30 @@ public String multy_state(PVector pos, PVector vel, ArrayList<Float> surfacePres
   multy_state_json.put("surfacePressures_8", surfacePressures.get(7));
  return multy_state_json.toJSONString();
 }
+
+/*
+public String flowFieldToJson(VectorField flowVelocity) {
+    JSONObject flowField = new JSONObject();
+    JSONArray xField = new JSONArray();
+    JSONArray yField = new JSONArray();
+
+    for (int i = 0; i < flowVelocity.x.a.length; i++) {
+        JSONArray xRow = new JSONArray();
+        JSONArray yRow = new JSONArray();
+        for (int j = 0; j < flowVelocity.x.a[i].length; j++) {
+            xRow.add(flowVelocity.x.a[i][j]);
+            yRow.add(flowVelocity.y.a[i][j]);
+        }
+        xField.add(xRow);
+        yField.add(yRow);
+    }
+
+    flowField.put("x", xField);
+    flowField.put("y", yField);
+    return flowField.toJSONString();
+}
+*/
+
 
 void setUpNewSim(int runNum){       
   int xLengths = 20, yLengths = 8, zoom = 100/resolution, Re = 500;    
