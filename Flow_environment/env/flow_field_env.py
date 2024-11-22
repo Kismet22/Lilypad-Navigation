@@ -31,9 +31,9 @@ class foil_env:
         self.m = 8 * 16
         self.r = 3 * 16
         self.circles = [
-            {"center": (self.n/6, self.m/2 + self.r/2), "radius": self.body_r},
-            {"center": (self.n/6, self.m/2 - self.r/2), "radius": self.body_r},
-            {"center": (self.n/6 + self.r*cos(pi/6), self.m/2), "radius": self.body_r}
+            {"center": (self.n/6, self.m/2 + self.r/2), "radius": self.body_r/2},
+            {"center": (self.n/6, self.m/2 - self.r/2), "radius": self.body_r/2},
+            {"center": (self.n/6 + self.r*cos(pi/6), self.m/2), "radius": self.body_r/2}
         ]
         self.observation_dim = 14
         self.action_dim = 3
@@ -50,6 +50,8 @@ class foil_env:
         self.agent_pos = np.array([0.0, 0.0])
         self.action_interval = config.action_interval
         self.dt = 0.075
+        self.u_flow = []
+        self.v_flow = []
         self.unwrapped = self
         self.unwrapped.spec = None
         self.observation_space = Box(low=-1e6, high=1e6, shape=[self.observation_dim])
@@ -99,24 +101,20 @@ class foil_env:
         action_json = {"v1": step_1, "v2": step_2, "v3": step_3}
         for _ in range(self.action_interval):  # only 1
             res_str = self.proxy.connect.Step(json.dumps(action_json))
-            step_state = self.parseStep(res_str)  # 解析返回的状态
+            step_state, vflow_x, vflow_y = self.parseStep(res_str)  # 解析返回的状态
             state_1 = np.array(step_state, dtype=np.float32)  # 将状态转换为 NumPy 数组
-            """"
-            res_str = self.proxy.connect.Step(json.dumps(action_json))
-            # 将action传入lilypad并返回state, reward, 将一个Python数据结构转换为JSON
-            [step_state, step_reward, step_done] = self.parseStep(res_str)
-            reward_1, state_1, done_1 = (np.array(step_reward, dtype=np.float32), np.array(step_state, np.float32),
-                                         np.array(step_done, np.float32))
-            """
+            v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
+            v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
+        # self.done = done_1
+        # print("simulation dones:",self.done)
         # step:info
         _info = {"vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
                  "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
                  "pressure_1": state_1[6], "pressure_2": state_1[7], "pressure_3": state_1[8],
                  "pressure_4": state_1[9], "pressure_5": state_1[10], "pressure_6": state_1[11],
                  "pressure_7": state_1[12], "pressure_8": state_1[13]}
+        
         # step agent position
-        # self.done = done_1
-        # print("simulation dones:",self.done)
         self.agent_pos = [state_1[3], state_1[4]]
         new_pos = self.agent_pos
         d = np.linalg.norm(self.agent_pos - self.target_position)
@@ -155,7 +153,8 @@ class foil_env:
                     _reward = -self.dt * 10 - (d - self.d_2_target)
         self.d_2_target = d
         self.reward = _reward
-        
+        self.u_flow = v_x
+        self.v_flow = v_y
         return self.state, self.reward, _terminated, _truncated, _info
 
     def reset(self):
@@ -164,8 +163,10 @@ class foil_env:
         action_json = {"v1": 0, "v2": 0, "v3": 0}
         res_str = self.proxy.connect.reset(json.dumps(action_json))  # 调用 reset 获取新状态
         self.show_info(res_str)  # 显示返回的状态信息
-        step_state = self.parseStep(res_str)  # 解析返回的状态
+        step_state, vflow_x, vflow_y = self.parseStep(res_str)  # 解析返回的状态
         state_1 = np.array(step_state, dtype=np.float32)  # 将状态转换为 NumPy 数组
+        v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
+        v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
         _info = {"vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
                  "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
                  "pressure_1": state_1[6], "pressure_2": state_1[7], "pressure_3": state_1[8],
@@ -178,6 +179,8 @@ class foil_env:
         # step state:[pos_x, pos_y] -> [dx, dy]
         state_1[3], state_1[4] = self.target_position[0] - state_1[3], self.target_position[1] - state_1[4]
         self.state = state_1
+        self.u_flow = v_x
+        self.v_flow = v_y
         # step terminate
         # self.done = done_1
         return self.state, _info
@@ -197,12 +200,13 @@ class foil_env:
     def parseStep(self, info):  # 对lilypad返回信息解码
         all_info = json.loads(info)
         state = json.loads(all_info['state'][0])
-        # TODO: ?
         state_ls = [state['vel_x'], state['vel_y'], state['vel_angle'], state['pos_x'], state['pos_y'], state['angle'],
                     state['surfacePressures_1'], state['surfacePressures_2'], state['surfacePressures_3'],
                     state['surfacePressures_4'], state['surfacePressures_5'], state['surfacePressures_6'],
                     state['surfacePressures_7'], state['surfacePressures_8']]  # state
-        return state_ls
+        flow_u = all_info.get('flow_u')  # 假设 flow_u 是一个二维数组
+        flow_v = all_info.get('flow_v')  # 假设 flow_v 是一个二维数组
+        return state_ls,flow_u,flow_v
 
 
     def parseState(self, state):
@@ -224,6 +228,7 @@ class foil_env:
         return False
 
     def show_info(self, info):
+        # 显示state中的内容
         all_info = json.loads(info)
         state_json_str = all_info['state'][0]
 
