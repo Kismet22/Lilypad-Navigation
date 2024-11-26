@@ -27,11 +27,11 @@ def train(model_id, render_mode=None):
 
     # 一个episode中的最大时间步数,存在环境时间限制时,最大时间步应该大于环境时间限制
     # max time_steps in one episode
-    max_steps = 400
+    max_steps = 4000
     max_ep_len = max_steps + 20
     # 结束训练的总训练步数
     # break training loop if timesteps > max_training_timesteps
-    max_training_timesteps = int(1e6)
+    max_training_timesteps = int(1e8)
 
     # 打印/保存episode奖励均值
     # Note : print/log frequencies should be more than max_ep_len
@@ -42,7 +42,7 @@ def train(model_id, render_mode=None):
 
     # 存储模型间隔
     # save model frequency (in num timesteps)
-    save_model_freq = int(1e4)
+    save_model_freq = int(4e4)
 
     # 注意，这里的标准差信息都是针对网络直接输出而言，即最终网络激活函数的归一化输出[-1, 1]作为均值的方差
     # 初始方差
@@ -52,7 +52,7 @@ def train(model_id, render_mode=None):
     # 最小方差
     min_action_std = 0.04  # minimum action_std (stop decay after action_std <= min_action_std)
     # 方差缩减频率
-    action_std_decay_freq = int(2e5)  # action_std decay frequency (in num timesteps)
+    action_std_decay_freq = int(8e5)  # action_std decay frequency (in num timesteps)
     #####################################################
 
     ################ 强化学习超参数设置 ################
@@ -193,7 +193,7 @@ def train(model_id, render_mode=None):
     ppo_agent = Classic_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
                             has_continuous_action_space,
                             action_std, continuous_action_output_scale=action_output_scale,
-                            continuous_action_output_bias=action_output_bias)
+                            continuous_action_output_bias=action_output_bias, mini_batch_size=32)
 
     # track total training time
     start_time = datetime.now().replace(microsecond=0)

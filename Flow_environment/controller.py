@@ -56,7 +56,7 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle):
     plt.draw()
 """
 
-def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, sample_rate=10):
+def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, speed, flow_speed, sample_rate=10):
     ax.clear()
     
     # 起点
@@ -99,10 +99,15 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
     )
     ax.add_patch(ellipse)
     
-    # 在右下角显示智能体的坐标
-    ax.text(0.95, 0.05, f"Agent (x, y): ({agent_pos[0]:.2f}, {agent_pos[1]:.2f})", 
-            transform=ax.transAxes, fontsize=12, verticalalignment='bottom', horizontalalignment='right',
-            bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+    # 在右下角显示智能体的坐标、速度和流场速度
+    ax.text(
+        0.95, 0.05, 
+        (f"Agent (x, y): ({agent_pos[0]:.2f}, {agent_pos[1]:.2f})\n"
+         f"Speed: {speed:.2f}\n"
+         f"Flow Speed: {flow_speed:.2f}"),
+        transform=ax.transAxes, fontsize=12, verticalalignment='bottom', horizontalalignment='right',
+        bbox=dict(facecolor='white', edgecolor='none', alpha=0.7)
+    )
 
     # 设置图形属性
     ax.set_xlim(0, env.x_range)
@@ -123,7 +128,9 @@ def reset_env():
     history = [agent_pos]
     flow_x = env.u_flow
     flow_y = env.v_flow
-    plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y)
+    a_speed = env.speed
+    f_speed = env.flow_speed
+    plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed, f_speed)
     status_label.config(text="Status: Ready", foreground="green")
     canvas.draw()
 
@@ -138,10 +145,12 @@ def update_trajectory():
         agent_angle = env.state[5]
         flow_x = env.u_flow
         flow_y = env.v_flow
+        a_speed = env.speed
+        f_speed = env.flow_speed
         history.append(agent_pos)
         
         # 绘制环境和轨迹
-        plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y)
+        plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed, f_speed)
 
         # 根据是否结束状态更新提示信息
         if terminated:
@@ -163,6 +172,8 @@ target = env.target_position
 circles = env.circles
 flow_x = env.u_flow
 flow_y = env.v_flow
+a_speed = env.speed
+f_speed = env.flow_speed
 history = [start_point]
 
 # 创建 Tkinter 主窗口
@@ -174,7 +185,7 @@ fig, ax = plt.subplots(figsize=(16, 9))
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas_widget = canvas.get_tk_widget()
 canvas_widget.grid(row=0, column=0, columnspan=4)
-plot_env(ax, start_point, target, circles, start_point, history, 0, flow_x, flow_y)
+plot_env(ax, start_point, target, circles, start_point, history, 0, flow_x, flow_y, a_speed, f_speed)
 
 # 控制面板
 control_frame = tk.Frame(root)
