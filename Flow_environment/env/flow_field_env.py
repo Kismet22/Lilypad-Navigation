@@ -30,6 +30,9 @@ class foil_env:
         self.n = 20 * 16
         self.m = 8 * 16
         self.r = 3 * 16
+        # 智能体椭圆信息
+        self.ellipse_b = self.body_r/4 # 竖直摆放的椭圆 b = 1.5a
+        self.ellipse_a = self.ellipse_b / 1.5
         self.circles = [
             {"center": (self.n/6, self.m/2 + self.r/2), "radius": self.body_r/2},
             {"center": (self.n/6, self.m/2 - self.r/2), "radius": self.body_r/2},
@@ -65,6 +68,9 @@ class foil_env:
         self.reward = 0
         self.done = False
         self.d_2_target = 0
+        # 记录智能体速度
+        self.speed = 0
+        self.flow_speed = 0
 
         # TODO:start the server
         while True:
@@ -105,8 +111,6 @@ class foil_env:
             state_1 = np.array(step_state, dtype=np.float32)  # 将状态转换为 NumPy 数组
             v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
             v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
-        # self.done = done_1
-        # print("simulation dones:",self.done)
         # step:info
         _info = {"vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
                  "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
@@ -123,12 +127,13 @@ class foil_env:
         state_2 = state_1[:6]
         self.state = state_1
         # step reward
-        # 环境反馈的出界标识
-        if not (0 <= new_pos[0] <= self.x_range and 0 <= new_pos[1] <= self.y_range):
+        # 检查出界
+        if self.is_out_of_bounds():
             _truncated = True
             _reward = -0
             print(colored("**** Episode Finished **** Hit Boundary.", 'red'))
         else:
+            # 检查撞涡，应该不需要?
             if self.is_in_circle(self.circles):
                 _truncated = True
                 _reward = -0
@@ -141,23 +146,38 @@ class foil_env:
             # 正常情况
             else:
                 # 检查终点
-                if d <= self.target_r * 2.5:
-                    mid = 0.5 * (self.agent_pos + pos_cur)
-                    d_mid = np.linalg.norm(mid - self.target_position)
-                    if d_mid <= self.target_r or d <= self.target_r:
-                        _terminated = True
-                        _reward = 200
-                        print(colored("**** Episode Finished **** SUCCESS.", 'green'))
+                if self.is_reach_target():
+                    _terminated = True
+                    _reward = 500
+                    print(colored("**** Episode Finished **** SUCCESS.", 'green'))
                 # 运行途中
                 else:
-                    _reward = -self.dt * 10 - (d - self.d_2_target)
+                    # 4000 times_step r = -300
+                    # d = 150到200之间
+                    # 需要给两个参数
+                    _reward = -self.dt - 2 * (d - self.d_2_target)
+        print(f"Check_reward:t{self.dt * 10};distance{-d + self.d_2_target}")
+        # 环境记录以及更新
         self.d_2_target = d
         self.reward = _reward
         self.u_flow = v_x
         self.v_flow = v_y
+        self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
+        theta_rad = np.arctan2(state_1[1], state_1[0])  # 计算方向角（弧度）
+
+        flow_x_pos = int(round(self.agent_pos[0] + 4 * np.cos(theta_rad)))
+        flow_y_pos = int(round(self.agent_pos[1] + 4 * np.sin(theta_rad)))
+
+        flow_x_pos = max(0, min(flow_x_pos, v_x.shape[0] - 1))
+        flow_y_pos = max(0, min(flow_y_pos, v_y.shape[1] - 1))
+
+        # 获取对应位置的流场速度
+        self.flow_speed = np.sqrt(v_x[flow_x_pos, flow_y_pos]**2 + v_y[flow_x_pos, flow_y_pos]**2)
+        # print("Step Angle:", self.state[5])
         return self.state, self.reward, _terminated, _truncated, _info
 
     def reset(self):
+        print("target_pos:", self.target_position)
         self.step_counter=0
         # TODO: reset true environment
         action_json = {"v1": 0, "v2": 0, "v3": 0}
@@ -181,8 +201,20 @@ class foil_env:
         self.state = state_1
         self.u_flow = v_x
         self.v_flow = v_y
+        self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
+        theta_rad = np.arctan2(state_1[1], state_1[0])  # 计算方向角（弧度）
+
+        flow_x_pos = int(round(self.agent_pos[0] + 4 * np.cos(theta_rad)))
+        flow_y_pos = int(round(self.agent_pos[1] + 4 * np.sin(theta_rad)))
+
+        flow_x_pos = max(0, min(flow_x_pos, v_x.shape[0] - 1))
+        flow_y_pos = max(0, min(flow_y_pos, v_y.shape[1] - 1))
+
+        # 获取对应位置的流场速度
+        self.flow_speed = np.sqrt(v_x[flow_x_pos, flow_y_pos]**2 + v_y[flow_x_pos, flow_y_pos]**2)
         # step terminate
         # self.done = done_1
+        # print("Reset Angle:", self.state[5])
         return self.state, _info
     """"
     def parseStep(self, info):  # 对lilypad返回信息解码
@@ -226,6 +258,54 @@ class foil_env:
             if distance < radius:
                 return True
         return False
+    
+    def is_out_of_bounds(self):
+        # 检测椭圆是否完全出界。
+        x_c, y_c = self.agent_pos  # 椭圆中心
+        a = self.ellipse_a  # 椭圆的半长轴
+        b = self.ellipse_b  # 椭圆的半短轴
+        theta = self.state[5]  # 椭圆的旋转角度（弧度）
+
+        # 椭圆顶点（未旋转前）
+        vertices = [(a, 0), (-a, 0),  # 长轴方向的两个点
+                    (0, b), (0, -b)   # 短轴方向的两个点
+                    ]
+
+        # 旋转后的顶点坐标
+        rotated_vertices = []
+        for vx, vy in vertices:
+            x_rot = x_c + vx * np.cos(theta) - vy * np.sin(theta)
+            y_rot = y_c + vx * np.sin(theta) + vy * np.cos(theta)
+            rotated_vertices.append((x_rot, y_rot))
+
+        for x, y in rotated_vertices:
+            if not (0 <= x <= self.x_range and 0 <= y <= self.y_range):
+                return True
+        return False
+
+    
+    def is_reach_target(self):
+        # 检测当前椭圆是否覆盖目标点。
+        x_c, y_c = self.agent_pos  # 椭圆的中心位置
+        x_o, y_o = self.target_position  # 目标点位置
+
+        # 获取椭圆参数
+        theta = self.state[5]  # 椭圆的旋转角度，单位：弧度
+        a = self.ellipse_a  # 椭圆的半长轴
+        b = self.ellipse_b  # 椭圆的半短轴
+
+        # 将目标点变换到椭圆坐标系中
+        dx = x_o - x_c
+        dy = y_o - y_c
+        x_prime = dx * np.cos(-theta) - dy * np.sin(-theta)
+        y_prime = dx * np.sin(-theta) + dy * np.cos(-theta)
+
+        # 判断目标点是否在椭圆内
+        if (x_prime**2 / a**2 + y_prime**2 / b**2) <= 1:
+            return True
+        return False
+
+
 
     def show_info(self, info):
         # 显示state中的内容
