@@ -19,7 +19,7 @@ def is_port_in_use(port: int) -> bool:
         return s.connect_ex(('localhost', port)) == 0
 
 class foil_env:
-    def __init__(self, config=None, info='', local_port=None, network_port=None, target_position=None, max_step=None, include_flow=False):
+    def __init__(self, config=None, info='', local_port=None, network_port=None, target_position=None, max_step=None):
         # n = 20 * 16  m = 8 * 16 r = 3 * 16 每个圆柱的半径是1*16
         # m 和 n 对应模拟窗格的大小
         # 三角形排布 [n/6, n/6, n/6+r*cos(theta)] [m/2 + r/2, m/2 - r/2, m/2]
@@ -48,9 +48,11 @@ class foil_env:
         else:
             self.t_step_max = self.steps_default
         self.state = [0, 0, 0, 0, 0, 0]
-        # todo
-        low = np.array([-20.0, -20, -0.1], dtype=np.float32)  # 每个维度的下界
-        high = np.array([20.0, 20, 0.1], dtype=np.float32)  # 每个维度的上界
+        # TODO:change action range
+        #low = np.array([-20.0, -20, -0.1], dtype=np.float32)  # 每个维度的下界
+        #high = np.array([20.0, 20, 0.1], dtype=np.float32)  # 每个维度的上界
+        low = np.array([-20.0, -0.0001, -0.0001], dtype=np.float32)  # 每个维度的下界
+        high = np.array([20.0, 0.0001, 0.0001], dtype=np.float32)  # 每个维度的上界
         self.agent_pos = np.array([0.0, 0.0])
         self.action_interval = config.action_interval
         self.dt = 0.075
@@ -72,7 +74,7 @@ class foil_env:
         # 记录智能体速度
         self.speed = 0
         self.flow_speed = 0
-        self.include_flow = include_flow
+        self.include_flow = False
 
         # TODO:start the server
         flow_flag = 'true' if self.include_flow else 'false'
@@ -112,27 +114,18 @@ class foil_env:
         action_json = {"v1": step_1, "v2": step_2, "v3": step_3}
         for _ in range(self.action_interval):  # only 1
             res_str = self.proxy.connect.Step(json.dumps(action_json))
-            if self.include_flow:
-                step_state, vflow_x, vflow_y = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
-                # TODO:尝试调整Sever中的代码内容，让展示时返回流场内容，训练时不返回
-                v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
-                v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
-            else:
-                step_state = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
+            # step_state, vflow_x, vflow_y = self.parseStep(res_str)  # 解析返回的状态
+            step_state = self.parseStep(res_str)  # 解析返回的状态
             state_1 = np.array(step_state, dtype=np.float32)  # 将状态转换为 NumPy 数组
+            # v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
+            # v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
         # step:info
         _info = {"vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
                  "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
                  "pressure_1": state_1[6], "pressure_2": state_1[7], "pressure_3": state_1[8],
                  "pressure_4": state_1[9], "pressure_5": state_1[10], "pressure_6": state_1[11],
                  "pressure_7": state_1[12], "pressure_8": state_1[13]}
-        # TODO:
-        print("pos_x, y:", state_1[3], state_1[4])
-        print("angel:", state_1[5])
-        print("vel_x, y", state_1[0], state_1[1])
-        print("vel_angle", state_1[2])
-        print("------------------------------------------------")
-
+        
         # step agent position
         self.agent_pos = [state_1[3], state_1[4]]
         new_pos = self.agent_pos
@@ -145,7 +138,9 @@ class foil_env:
         # 检查出界
         if self.is_out_of_bounds():
             _truncated = True
-            _reward = -200
+            # TODO:出界损失改为0
+            # _reward = -200
+            _reward = -0
             print(colored("**** Episode Finished **** Hit Boundary.", 'red'))
         else:
             # 检查撞涡，应该不需要?
@@ -170,16 +165,30 @@ class foil_env:
                     # 4000 times_step r = -300
                     # d = 150到200之间
                     # 需要给两个参数
-                    _reward = -self.dt - 10 * (d - self.d_2_target)
+                    # TODO:删除时间惩罚
+                    # _reward = -self.dt - 10 * (d - self.d_2_target)
+                    _reward = -10 * (d - self.d_2_target)
+
         # print(f"Check_reward:t{self.dt * 10};distance{-d + self.d_2_target}")
         # 环境记录以及更新
         self.d_2_target = d
         self.reward = _reward
-        if self.include_flow:
-            self.u_flow = v_x
-            self.v_flow = v_y
-            self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
-            # print("Step Angle:", self.state[5])
+        """
+        self.u_flow = v_x
+        self.v_flow = v_y
+        self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
+        theta_rad = np.arctan2(state_1[1], state_1[0])  # 计算方向角（弧度）
+
+        flow_x_pos = int(round(self.agent_pos[0] + 4 * np.cos(theta_rad)))
+        flow_y_pos = int(round(self.agent_pos[1] + 4 * np.sin(theta_rad)))
+
+        flow_x_pos = max(0, min(flow_x_pos, v_x.shape[0] - 1))
+        flow_y_pos = max(0, min(flow_y_pos, v_y.shape[1] - 1))
+
+        # 获取对应位置的流场速度
+        self.flow_speed = np.sqrt(v_x[flow_x_pos, flow_y_pos]**2 + v_y[flow_x_pos, flow_y_pos]**2)
+        # print("Step Angle:", self.state[5])
+        """
         return self.state, self.reward, _terminated, _truncated, _info
 
     def reset(self):
@@ -189,14 +198,11 @@ class foil_env:
         action_json = {"v1": 0, "v2": 0, "v3": 0}
         res_str = self.proxy.connect.reset(json.dumps(action_json))  # 调用 reset 获取新状态
         # self.show_info(res_str)  # 显示返回的状态信息
-        if self.include_flow:
-            step_state, vflow_x, vflow_y = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
-            # TODO:尝试调整Sever中的代码内容，让展示时返回流场内容，训练时不返回
-            v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
-            v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
-        else:
-            step_state = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
+        # step_state, vflow_x, vflow_y = self.parseStep(res_str)  # 解析返回的状态
+        step_state = self.parseStep(res_str)  # 解析返回的状态
         state_1 = np.array(step_state, dtype=np.float32)  # 将状态转换为 NumPy 数组
+        # v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
+        # v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
         _info = {"vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
                  "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
                  "pressure_1": state_1[6], "pressure_2": state_1[7], "pressure_3": state_1[8],
@@ -209,39 +215,38 @@ class foil_env:
         # step state:[pos_x, pos_y] -> [dx, dy]
         state_1[3], state_1[4] = self.target_position[0] - state_1[3], self.target_position[1] - state_1[4]
         self.state = state_1
-        if self.include_flow:
-            self.u_flow = v_x
-            self.v_flow = v_y
-            self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
+        """
+        self.u_flow = v_x
+        self.v_flow = v_y
+        self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
+        theta_rad = np.arctan2(state_1[1], state_1[0])  # 计算方向角（弧度）
+
+        flow_x_pos = int(round(self.agent_pos[0] + 4 * np.cos(theta_rad)))
+        flow_y_pos = int(round(self.agent_pos[1] + 4 * np.sin(theta_rad)))
+
+        flow_x_pos = max(0, min(flow_x_pos, v_x.shape[0] - 1))
+        flow_y_pos = max(0, min(flow_y_pos, v_y.shape[1] - 1))
+
+        # 获取对应位置的流场速度
+        self.flow_speed = np.sqrt(v_x[flow_x_pos, flow_y_pos]**2 + v_y[flow_x_pos, flow_y_pos]**2)
+        # step terminate
+        # self.done = done_1
+        # print("Reset Angle:", self.state[5])
+        """
         return self.state, _info
-    """"
+
     def parseStep(self, info):  # 对lilypad返回信息解码
         all_info = json.loads(info)
         state = json.loads(all_info['state'][0])
-        reward = all_info['reward']
-        done = all_info['done']
         state_ls = [state['vel_x'], state['vel_y'], state['vel_angle'], state['pos_x'], state['pos_y'], state['angle'],
                     state['surfacePressures_1'], state['surfacePressures_2'], state['surfacePressures_3'],
                     state['surfacePressures_4'], state['surfacePressures_5'], state['surfacePressures_6'],
                     state['surfacePressures_7'], state['surfacePressures_8']]  # state
-        return state_ls, reward, done
-    """
-
-    def parseStep(self, info, _is_flow):  # 对lilypad返回信息解码
-        all_info = json.loads(info)
-        state = json.loads(all_info['state'][0])
-        state_ls = [state['vel_x'], state['vel_y'], state['vel_angle'], state['pos_x'], state['pos_y'], state['angle'],
-                    state['surfacePressures_1'], state['surfacePressures_2'], state['surfacePressures_3'],
-                    state['surfacePressures_4'], state['surfacePressures_5'], state['surfacePressures_6'],
-                    state['surfacePressures_7'], state['surfacePressures_8']]  # state
-        if _is_flow:
-            # TODO:是不是速度取反了
-            flow_u = all_info.get('flow_u')  # 假设 flow_u 是一个二维数组
-            flow_v = all_info.get('flow_v')  # 假设 flow_v 是一个二维数组
-            return state_ls, flow_u, flow_v
+        # flow_u = all_info.get('flow_u')  # 假设 flow_u 是一个二维数组
+        # flow_v = all_info.get('flow_v')  # 假设 flow_v 是一个二维数组
         return state_ls
 
-    """
+
     def parseState(self, state):
         state = json.loads(json.loads(state)['state'][0])
         state['SparsePressure'] = list(map(float, state['SparsePressure'].split('_')))
@@ -250,7 +255,6 @@ class foil_env:
                     state['theta_velocity']] + state['SparsePressure']
         state_ls = list(np.nan_to_num(np.array(state_ls), nan=0))
         return state_ls
-    """
 
     def is_in_circle(self, circles):
         for circle in circles:
@@ -309,8 +313,6 @@ class foil_env:
             return True
         return False
 
-
-
     def show_info(self, info):
         # 显示state中的内容
         all_info = json.loads(info)
@@ -336,24 +338,3 @@ class foil_env:
     def close(self):
         if self.local_port == None:
             self.server.terminate()
-
-"""
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    args, unknown = parser.parse_known_args()
-    args.action_interval = 10
-
-    env = foil_env(args)
-    env.reset()
-    print("target_init:", env.target_position)
-    print("position_init:", env.agent_pos)
-
-    for _ in range(5):
-        # 执行动作并获取状态
-        state, reward, terminate, truncate, info = env.step([5, 5, 1])
-        print("position:", env.agent_pos)
-        print(info)
-        env.reset()
-        print("position_re_init:", env.agent_pos)
-    env.terminate()
-"""
