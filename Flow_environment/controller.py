@@ -12,7 +12,7 @@ max_steps = 400
 parser_1 = argparse.ArgumentParser()
 args_1, unknown = parser_1.parse_known_args()
 args_1.action_interval = 10
-env = flow_field_env.foil_env(args_1, max_step=max_steps)
+env = flow_field_env.foil_env(args_1, max_step=max_steps, include_flow=True)
 
 from matplotlib.patches import Ellipse
 import numpy as np
@@ -56,10 +56,12 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle):
     plt.draw()
 """
 
-def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, speed, flow_speed, sample_rate=10):
+def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x = None, flow_y = None, speed=None, sample_rate=10):
     ax.clear()
     
     # 起点
+    # flow_x中保存x的流速网格
+    # flow_y中保存y的流速网格
     ax.scatter(*start_point, color='blue', label='Start Point', zorder=5)
     # 目标点
     ax.scatter(*target, color='green', label='Target Point', zorder=5)
@@ -72,8 +74,9 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
     if history:
         hx, hy = zip(*history)
         ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
-    
+
     # 流场绘制（下采样）
+    # TODO:改变网格试试呢
     x = np.linspace(0, env.x_range, flow_x.shape[1])[::sample_rate]
     y = np.linspace(0, env.y_range, flow_x.shape[0])[::sample_rate]
     X, Y = np.meshgrid(x, y)
@@ -85,6 +88,7 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
     width=0.002, pivot='middle',
     headwidth=3, headaxislength=3
             )
+
 
     # ax.quiver(X, Y, sampled_flow_x, sampled_flow_y, scale=50, color='black', alpha=0.5, zorder=2)
     # 流线图
@@ -103,8 +107,9 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
     ax.text(
         0.95, 0.05, 
         (f"Agent (x, y): ({agent_pos[0]:.2f}, {agent_pos[1]:.2f})\n"
-         f"Speed: {speed:.2f}\n"
-         f"Flow Speed: {flow_speed:.2f}"),
+            f"Angle: {agent_angle:.2f}\n"
+            f"Speed: {speed:.2f}"
+         ),
         transform=ax.transAxes, fontsize=12, verticalalignment='bottom', horizontalalignment='right',
         bbox=dict(facecolor='white', edgecolor='none', alpha=0.7)
     )
@@ -118,7 +123,6 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
     plt.draw()
 
 
-
 # 重置函数：重置环境和历史轨迹
 def reset_env():
     global history, agent_pos
@@ -130,7 +134,8 @@ def reset_env():
     flow_y = env.v_flow
     a_speed = env.speed
     f_speed = env.flow_speed
-    plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed, f_speed)
+    plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed)
+    #plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle)
     status_label.config(text="Status: Ready", foreground="green")
     canvas.draw()
 
@@ -150,7 +155,8 @@ def update_trajectory():
         history.append(agent_pos)
         
         # 绘制环境和轨迹
-        plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed, f_speed)
+        plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed)
+        #plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle)
 
         # 根据是否结束状态更新提示信息
         if terminated:
@@ -173,7 +179,6 @@ circles = env.circles
 flow_x = env.u_flow
 flow_y = env.v_flow
 a_speed = env.speed
-f_speed = env.flow_speed
 history = [start_point]
 
 # 创建 Tkinter 主窗口
@@ -185,7 +190,8 @@ fig, ax = plt.subplots(figsize=(16, 9))
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas_widget = canvas.get_tk_widget()
 canvas_widget.grid(row=0, column=0, columnspan=4)
-plot_env(ax, start_point, target, circles, start_point, history, 0, flow_x, flow_y, a_speed, f_speed)
+plot_env(ax, start_point, target, circles, start_point, history, 0, flow_x, flow_y, a_speed)
+#plot_env(ax, start_point, target, circles, start_point, history, 0)
 
 # 控制面板
 control_frame = tk.Frame(root)

@@ -85,7 +85,7 @@ class ActorCritic(nn.Module):
                 nn.Linear(self.hidden_layer_dim, self.hidden_layer_dim),
                 nn.Tanh(),
                 nn.Linear(self.hidden_layer_dim, action_dim),
-                # 最终输出为(batch_size, action_dim)
+                # 最终输出为(batch_size, action_dim),范围在[-1, 1]
                 nn.Tanh()
             )
         else:
@@ -143,9 +143,14 @@ class ActorCritic(nn.Module):
             cov_mat = torch.diag(self.action_var).unsqueeze(dim=0)
             # 创建一个多元正态分布
             dist = MultivariateNormal(action_mean, cov_mat)
+
+            # print("action mean:", action_mean) # todo
+
         else:
             action_probs = self.actor(state)
             dist = Categorical(action_probs)
+
+
 
         # 从创建的分布中采样一个动作
         action = dist.sample()
@@ -278,7 +283,7 @@ class Classic_PPO:
 
     def select_action(self, input_state):
         """
-        输入state，返回要采取的action，并保存action, action_logprob, state_val至buffer
+        输入state,返回要采取的action,并保存action, action_logprob, state_val至buffer
         :param input_state:
         :return: 经过线性变换的action
         """
@@ -312,8 +317,10 @@ class Classic_PPO:
             self.buffer.state_values.append(state_val)
             # 对action做线性变换
             action_raw = action.detach().cpu().numpy().flatten()
+            # print("action_raw:", action_raw)
             # action输出的范围为(-1, 1)
             action_out = action_raw * self.continuous_action_output_scale + self.continuous_action_output_bias
+            # print("action_out:", action_out)
             return action_out
 
         else:
@@ -449,7 +456,7 @@ class Classic_PPO:
     def load_full(self, filename):
         # 将网络数据和优化器数据都加载出来
         print("=> Loading checkpoint")
-        checkpoint = torch.load(filename)
+        checkpoint = torch.load(filename, weights_only=False)
         self.policy_old.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.policy.load_state_dict(self.policy_old.state_dict())  # Ensure both policies are synced
