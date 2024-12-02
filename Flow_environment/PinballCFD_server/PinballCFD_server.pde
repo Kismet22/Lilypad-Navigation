@@ -42,6 +42,8 @@ int velcount = 0;
 float[] ycoords;
 
 int StepTime = 10, StepCount = 1;// used for adjust Ct avg length
+// flow_info
+boolean flowFlag = false; // 默认不包含流场数据
 
 float nextactionC=0, nextactionB=0,nextactionA=0,nextactionAvel = 0, nextactionAoAvel = 0;
 float formerA = 0, formerAoA = 0,formerAvel = 0, formerAoAvel = 0;
@@ -63,18 +65,21 @@ Semaphore action_sem = new Semaphore(0);
 Semaphore state_sem = new Semaphore(0);
 
 
+
+
 void settings()
 {
   size(640, 256);
 
 }
 
-void setup()
+// 旧的启动方式，不包含流场数据符号
+/*void setup()
 {
 
   try
   {
-    server = StartServer(int(args[0])); //端口号，args是什么??
+    server = StartServer(int(args[0])); //端口号
   }
   
   catch (Exception ex)
@@ -82,6 +87,23 @@ void setup()
     println(ex);
   }
   setUpNewSim(EpisodeNum);
+}*/
+
+
+void setup() {
+    try {
+        if (args != null && args.length > 1) {
+            int port = int(args[0]); // 解析端口号
+            boolean includeFlow = args[1].equalsIgnoreCase("true"); // 解析流场标志
+            server = StartServer(port, includeFlow); // 调用带参数的 StartServer
+            println("Server started on port: " + port + " with flow flag: " + includeFlow);
+        } else {
+            println("Error: Insufficient arguments provided. Please specify a port and flow flag.");
+        }
+    } catch (Exception ex) {
+        println("Error starting server: " + ex);
+    }
+    setUpNewSim(EpisodeNum); // 初始化仿真
 }
 
 void draw() {
@@ -111,6 +133,7 @@ void draw() {
   vel = test.vel;
   surfacePressures = test.surfacePressures;
   String state_cn = multy_state(pos, vel, surfacePressures);
+  //println("Lilypad Print:", pos);
 
   // 更新状态
   state.clear();
@@ -138,8 +161,9 @@ float[] callActionByRemote()
   return action;
 }
 
-/*
-void reward(float COST)
+
+// Lilypad回传奖励函数，不需要
+/*void reward(float COST)
 {
   float target_reward = COST;
   if ((test.t +0.12) > EpisodeTime){
@@ -155,12 +179,12 @@ void reward(float COST)
   reward_buffer = target_reward;
   //release state semaphore to let server return the resulted state
   state_sem.release();
-}
-*/
+}*/
 
 
-// start a server
-WebServer StartServer(int port)
+
+// 旧的启动方式，不包含流场数据符号
+/*WebServer StartServer(int port)
 {
   println(port);
   WebServer server = new WebServer(port);
@@ -170,10 +194,31 @@ WebServer StartServer(int port)
   System.out.println("Started server successfully.");
   System.out.println("Accepting requests. (Halt program to stop.)");
   return server;
+}*/
+
+
+WebServer StartServer(int port, boolean includeFlow) {
+    println(port);
+    WebServer server = new WebServer(port);
+    server.addHandler("connect", new serverHandler(includeFlow));
+    server.start();
+
+    System.out.println("Started server successfully.");
+    System.out.println("Accepting requests. (Halt program to stop.)");
+    return server;
 }
+
 
 // server handler to provide api
 public class serverHandler {
+    
+    // 成员变量存储 includeFlow 标志
+    private boolean includeFlow; 
+
+    // 构造函数,启用一个新的serverHandler类时包含流场标识
+    public serverHandler(boolean includeFlow) {
+        this.includeFlow = includeFlow; // 初始化标志
+    }
 
     public String Step(String actionInJson) {
         JSONObject output_object = new JSONObject();
@@ -198,8 +243,13 @@ public class serverHandler {
 
         // 构造输出数据，仅返回状态
         output_object.put("state", state);
-        output_object.put("flow_u", flowVelocityX);
-        output_object.put("flow_v", flowVelocityY);
+        // 如果 includeFlow 为 true，添加流场数据
+        if (includeFlow) {
+            output_object.put("flow_u", flowVelocityX);
+            output_object.put("flow_v", flowVelocityY);
+        }
+        //output_object.put("flow_u", flowVelocityX);
+        //output_object.put("flow_v", flowVelocityY);
 
         return output_object.toJSONString();
     }
@@ -208,8 +258,13 @@ public class serverHandler {
         JSONObject output_object = new JSONObject();
         // 仅返回当前状态
         output_object.put("state", state);
-        output_object.put("flow_u", flowVelocityX);
-        output_object.put("flow_v", flowVelocityY);
+        // 如果 includeFlow 为 true，添加流场数据
+        if (includeFlow) {
+            output_object.put("flow_u", flowVelocityX);
+            output_object.put("flow_v", flowVelocityY);
+        }
+        //output_object.put("flow_u", flowVelocityX);
+        //output_object.put("flow_v", flowVelocityY);
         return output_object.toJSONString();
     }
 
@@ -239,8 +294,13 @@ public class serverHandler {
 
         // 构造输出数据，仅返回状态
         output_object.put("state", state);
-        output_object.put("flow_u", flowVelocityX);
-        output_object.put("flow_v", flowVelocityY);
+        // 如果 includeFlow 为 true，添加流场数据
+        if (includeFlow) {
+            output_object.put("flow_u", flowVelocityX);
+            output_object.put("flow_v", flowVelocityY);
+        }
+        //output_object.put("flow_u", flowVelocityX);
+        //output_object.put("flow_v", flowVelocityY);
         println("complete reset");
         return output_object.toJSONString();
     }
@@ -266,8 +326,8 @@ public String multy_state(PVector pos, PVector vel, ArrayList<Float> surfacePres
  return multy_state_json.toJSONString();
 }
 
-/*
-public String flowFieldToJson(VectorField flowVelocity) {
+
+/*public String flowFieldToJson(VectorField flowVelocity) {
     JSONObject flowField = new JSONObject();
     JSONArray xField = new JSONArray();
     JSONArray yField = new JSONArray();
@@ -286,8 +346,8 @@ public String flowFieldToJson(VectorField flowVelocity) {
     flowField.put("x", xField);
     flowField.put("y", yField);
     return flowField.toJSONString();
-}
-*/
+}*/
+
 
 
 void setUpNewSim(int runNum){       
