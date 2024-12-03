@@ -14,47 +14,6 @@ args_1, unknown = parser_1.parse_known_args()
 args_1.action_interval = 10
 env = flow_field_env.foil_env(args_1, max_step=max_steps, include_flow=True)
 
-from matplotlib.patches import Ellipse
-import numpy as np
-
-""""
-def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle):
-    ax.clear()
-    # 起点
-    ax.scatter(*start_point, color='blue', label='Start Point', zorder=5)
-    # 目标点
-    ax.scatter(*target, color='green', label='Target Point', zorder=5)
-    # 障碍物
-    for circle in circles:
-        ax.add_patch(
-            plt.Circle(circle["center"], circle["radius"], color='red', alpha=0.3)
-        )
-    # 历史轨迹
-    if history:
-        hx, hy = zip(*history)
-        ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
-    
-    # 当前智能体椭圆形状
-    ellipse_height = circle["radius"]  # 2a = 8
-    ellipse_width = ellipse_height / 1.5  # a/b = 1.5/1
-    ellipse = Ellipse(
-        xy=agent_pos, width=ellipse_width, height=ellipse_height, 
-        angle=np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4
-    )
-    ax.add_patch(ellipse)
-    
-    # 在右下角显示智能体的坐标
-    ax.text(0.95, 0.05, f"Agent (x, y): ({agent_pos[0]:.2f}, {agent_pos[1]:.2f})", 
-            transform=ax.transAxes, fontsize=12, verticalalignment='bottom', horizontalalignment='right',
-            bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-
-    ax.set_xlim(0, env.x_range)
-    ax.set_ylim(0, env.y_range)
-    ax.grid(True, linestyle='--', alpha=0.5)
-    ax.legend()
-    ax.set_title("Moving Trajectory")
-    plt.draw()
-"""
 
 def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x = None, flow_y = None, speed=None, sample_rate=10):
     ax.clear()
@@ -95,13 +54,32 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
     # ax.streamplot(X, Y, sampled_flow_x, sampled_flow_y, color='black', linewidth=1, density=0.8, arrowsize=1.2)
 
     # 当前智能体椭圆形状
+    # 角度方向，顺时针为正
     ellipse_height = circle["radius"]  # 2a = 8
     ellipse_width = ellipse_height / 1.5  # a/b = 1.5/1
     ellipse = Ellipse(
         xy=agent_pos, width=ellipse_width, height=ellipse_height, 
-        angle=np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4
+        angle=-np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4
     )
     ax.add_patch(ellipse)
+
+    # 绘制局部坐标系（随智能体移动）
+    # 角度取顺时针为正
+    axis_length = 10.0  # 坐标轴的长度
+    cos_angle = np.cos(-agent_angle)
+    sin_angle = np.sin(-agent_angle)
+
+    # 绘制x轴（红色）和y轴（绿色）
+    ax.quiver(
+        agent_pos[0], agent_pos[1], axis_length * cos_angle, axis_length * sin_angle,
+        angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='red', label="Agent_X"
+    )
+    ax.quiver(
+        agent_pos[0], agent_pos[1], -axis_length * sin_angle, axis_length * cos_angle,
+        angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='green', label="Agent_Y"
+    )
+    # 设置坐标轴比例为相等
+    ax.set_aspect('equal', 'box')  # 确保坐标轴的比例相同，避免椭圆变形
     
     # 在右下角显示智能体的坐标、速度和流场速度
     ax.text(
@@ -156,7 +134,6 @@ def update_trajectory():
         
         # 绘制环境和轨迹
         plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed)
-        #plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle)
 
         # 根据是否结束状态更新提示信息
         if terminated:
@@ -191,7 +168,6 @@ canvas = FigureCanvasTkAgg(fig, master=root)
 canvas_widget = canvas.get_tk_widget()
 canvas_widget.grid(row=0, column=0, columnspan=4)
 plot_env(ax, start_point, target, circles, start_point, history, 0, flow_x, flow_y, a_speed)
-#plot_env(ax, start_point, target, circles, start_point, history, 0)
 
 # 控制面板
 control_frame = tk.Frame(root)

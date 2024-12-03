@@ -285,13 +285,9 @@ def train(model_id, render_mode=None, checkpoint_path=None):
         for t in range(1, max_ep_len + 1):
             # select action with policy
             action = ppo_agent.select_action(state)
-            # print("action chosen:", action[0], action[1], action[2]/3.14159*180)  # todo
 
             state, reward, terminated, truncated, info = env.step(action)
-            # print("state:", state[0:6])  # todo
-            # print("------------------------------------------------")
-
-            # time.sleep(1)  # todo
+            # time.sleep(1)
 
             done = terminated or truncated
 

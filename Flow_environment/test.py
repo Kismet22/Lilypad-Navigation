@@ -12,6 +12,8 @@ import time
 from env import flow_field_env_1
 
 ppo_path = './models/PPO_xonly.pth'
+save_dir = './model_output'
+action_name = "action_ppo.csv"
 
 
 """
@@ -77,7 +79,7 @@ def test():
     args_1, unknown = parser_1.parse_known_args()
     args_1.action_interval = 10
     target = np.array([200, 64])
-    env = flow_field_env_1.foil_env(args_1, max_step=max_time_step, target_position=target)
+    env = flow_field_env_1.foil_env(args_1, max_step=max_time_step, target_position=target, include_flow=True)
 
     # 状态空间
     # state space dimension
@@ -137,6 +139,16 @@ def test():
 
     print("Total_Reward:", ep_return_ppo)
     print("Total_Steps:", total_steps_ppo)
+    # output_filename = save_dir + action_name
+    output_filename = os.path.join(save_dir, action_name)
+    # 打开文件进行写入
+    with open(output_filename, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["a_x", "a_y", "a_w"])
+        # 写入每个动作的数据
+        for action in action_ppo:
+            # 假设 action 是一个包含三个元素的列表
+            writer.writerow(action)
 
 
 if __name__ == '__main__':
