@@ -9,6 +9,7 @@ from gym.spaces import Box
 import os
 import signal
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 from termcolor import colored
 from math import pi, sin, cos
 
@@ -19,7 +20,7 @@ def is_port_in_use(port: int) -> bool:
         return s.connect_ex(('localhost', port)) == 0
 
 class foil_env:
-    def __init__(self, config=None, info='', local_port=None, network_port=None, target_position=None, max_step=None):
+    def __init__(self, config=None, info='', local_port=None, network_port=None, target_position=None, max_step=None, include_flow=False):
         # n = 20 * 16  m = 8 * 16 r = 3 * 16 每个圆柱的半径是1*16
         # m 和 n 对应模拟窗格的大小
         # 三角形排布 [n/6, n/6, n/6+r*cos(theta)] [m/2 + r/2, m/2 - r/2, m/2]
@@ -53,11 +54,12 @@ class foil_env:
         #high = np.array([20.0, 20, 0.1], dtype=np.float32)  # 每个维度的上界
         low = np.array([-20.0, -0.0001, -0.0001], dtype=np.float32)  # 每个维度的下界
         high = np.array([20.0, 0.0001, 0.0001], dtype=np.float32)  # 每个维度的上界
+        self.low = low
+        self.high = high
         self.agent_pos = np.array([0.0, 0.0])
+        self.agent_pos_history = []
         self.action_interval = config.action_interval
         self.dt = 0.075
-        self.u_flow = []
-        self.v_flow = []
         self.unwrapped = self
         self.unwrapped.spec = None
         self.observation_space = Box(low=-1e6, high=1e6, shape=[self.observation_dim])
@@ -71,10 +73,16 @@ class foil_env:
         self.reward = 0
         self.done = False
         self.d_2_target = 0
-        # 记录智能体速度
+        # 速度相关记录
+        self.angle = 0
+        self.u_flow = []
+        self.v_flow = []
         self.speed = 0
-        self.flow_speed = 0
-        self.include_flow = False
+        self.include_flow = include_flow
+
+        # 绘图
+        self.frame_pause = 0.03 # 渲染间隔时间
+        self.fig, self.ax = plt.subplots(figsize=(16, 9)) # 创建子图
 
         # TODO:start the server
         flow_flag = 'true' if self.include_flow else 'false'
@@ -100,6 +108,8 @@ class foil_env:
             self.proxy = ServerProxy(f"http://localhost:{local_port}/")
 
     def step(self, action):
+        # 动作裁剪
+        action = self.clip_action(action)
         _truncated = False
         _terminated = False
         _reward = 0
@@ -114,11 +124,14 @@ class foil_env:
         action_json = {"v1": step_1, "v2": step_2, "v3": step_3}
         for _ in range(self.action_interval):  # only 1
             res_str = self.proxy.connect.Step(json.dumps(action_json))
-            # step_state, vflow_x, vflow_y = self.parseStep(res_str)  # 解析返回的状态
-            step_state = self.parseStep(res_str)  # 解析返回的状态
+            if self.include_flow:
+                step_state, vflow_x, vflow_y = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
+                # TODO:尝试调整Sever中的代码内容，让展示时返回流场内容，训练时不返回
+                v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
+                v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
+            else:
+                step_state = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
             state_1 = np.array(step_state, dtype=np.float32)  # 将状态转换为 NumPy 数组
-            # v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
-            # v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
         # step:info
         _info = {"vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
                  "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
@@ -128,6 +141,8 @@ class foil_env:
         
         # step agent position
         self.agent_pos = [state_1[3], state_1[4]]
+        self.angle = state_1[5]
+        self.agent_pos_history.append(self.agent_pos)
         new_pos = self.agent_pos
         d = np.linalg.norm(self.agent_pos - self.target_position)
         # step state:[pos_x, pos_y] -> [dx, dy]
@@ -173,36 +188,29 @@ class foil_env:
         # 环境记录以及更新
         self.d_2_target = d
         self.reward = _reward
-        """
-        self.u_flow = v_x
-        self.v_flow = v_y
-        self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
-        theta_rad = np.arctan2(state_1[1], state_1[0])  # 计算方向角（弧度）
+        if self.include_flow:
+            self.u_flow = v_x
+            self.v_flow = v_y
+            self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
+            self._render_frame()
 
-        flow_x_pos = int(round(self.agent_pos[0] + 4 * np.cos(theta_rad)))
-        flow_y_pos = int(round(self.agent_pos[1] + 4 * np.sin(theta_rad)))
-
-        flow_x_pos = max(0, min(flow_x_pos, v_x.shape[0] - 1))
-        flow_y_pos = max(0, min(flow_y_pos, v_y.shape[1] - 1))
-
-        # 获取对应位置的流场速度
-        self.flow_speed = np.sqrt(v_x[flow_x_pos, flow_y_pos]**2 + v_y[flow_x_pos, flow_y_pos]**2)
-        # print("Step Angle:", self.state[5])
-        """
         return self.state, self.reward, _terminated, _truncated, _info
 
     def reset(self):
         print("target_pos:", self.target_position)
         self.step_counter=0
-        # TODO: reset true environment
+        # reset true environment
         action_json = {"v1": 0, "v2": 0, "v3": 0}
         res_str = self.proxy.connect.reset(json.dumps(action_json))  # 调用 reset 获取新状态
         # self.show_info(res_str)  # 显示返回的状态信息
-        # step_state, vflow_x, vflow_y = self.parseStep(res_str)  # 解析返回的状态
-        step_state = self.parseStep(res_str)  # 解析返回的状态
+        if self.include_flow:
+            step_state, vflow_x, vflow_y = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
+            # TODO:尝试调整Sever中的代码内容，让展示时返回流场内容，训练时不返回
+            v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
+            v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
+        else:
+            step_state = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
         state_1 = np.array(step_state, dtype=np.float32)  # 将状态转换为 NumPy 数组
-        # v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
-        # v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
         _info = {"vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
                  "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
                  "pressure_1": state_1[6], "pressure_2": state_1[7], "pressure_3": state_1[8],
@@ -215,35 +223,31 @@ class foil_env:
         # step state:[pos_x, pos_y] -> [dx, dy]
         state_1[3], state_1[4] = self.target_position[0] - state_1[3], self.target_position[1] - state_1[4]
         self.state = state_1
-        """
-        self.u_flow = v_x
-        self.v_flow = v_y
-        self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
-        theta_rad = np.arctan2(state_1[1], state_1[0])  # 计算方向角（弧度）
+        if self.include_flow:
+            self.u_flow = v_x
+            self.v_flow = v_y
+            self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
+            self._render_frame()
 
-        flow_x_pos = int(round(self.agent_pos[0] + 4 * np.cos(theta_rad)))
-        flow_y_pos = int(round(self.agent_pos[1] + 4 * np.sin(theta_rad)))
-
-        flow_x_pos = max(0, min(flow_x_pos, v_x.shape[0] - 1))
-        flow_y_pos = max(0, min(flow_y_pos, v_y.shape[1] - 1))
-
-        # 获取对应位置的流场速度
-        self.flow_speed = np.sqrt(v_x[flow_x_pos, flow_y_pos]**2 + v_y[flow_x_pos, flow_y_pos]**2)
-        # step terminate
-        # self.done = done_1
-        # print("Reset Angle:", self.state[5])
-        """
         return self.state, _info
+    
+    def clip_action(self, action):
+        # 使用 np.clip 裁剪动作，确保动作值在给定的范围内
+        action = np.clip(action, self.low, self.high)
+        return action
 
-    def parseStep(self, info):  # 对lilypad返回信息解码
+    def parseStep(self, info, _is_flow):  # 对lilypad返回信息解码
         all_info = json.loads(info)
         state = json.loads(all_info['state'][0])
         state_ls = [state['vel_x'], state['vel_y'], state['vel_angle'], state['pos_x'], state['pos_y'], state['angle'],
                     state['surfacePressures_1'], state['surfacePressures_2'], state['surfacePressures_3'],
                     state['surfacePressures_4'], state['surfacePressures_5'], state['surfacePressures_6'],
                     state['surfacePressures_7'], state['surfacePressures_8']]  # state
-        # flow_u = all_info.get('flow_u')  # 假设 flow_u 是一个二维数组
-        # flow_v = all_info.get('flow_v')  # 假设 flow_v 是一个二维数组
+        if _is_flow:
+            # TODO:是不是速度取反了
+            flow_u = all_info.get('flow_u')  # 假设 flow_u 是一个二维数组
+            flow_v = all_info.get('flow_v')  # 假设 flow_v 是一个二维数组
+            return state_ls, flow_u, flow_v
         return state_ls
 
 
@@ -338,3 +342,105 @@ class foil_env:
     def close(self):
         if self.local_port == None:
             self.server.terminate()
+    
+    def _render_frame(self):
+        if len(self.agent_pos_history) == 0:
+            return
+        # 获取当前坐标轴
+        ax = self.ax
+        ax.clear()  # 清除当前坐标轴的内容
+
+        # 调用 plot_env 绘制图形
+        self.plot_env(ax)  # 传递 ax 给 plot_env 用于绘图
+        plt.draw()  # 刷新图形
+        plt.pause(self.frame_pause)  # 暂停以更新图形
+
+    def plot_env(self, ax, sample_rate=10):
+        history = self.agent_pos_history
+        start_point = history[0]
+        target = self.target_position
+        circles = self.circles
+        agent_pos = self.agent_pos
+        agent_angle = self.angle
+        flow_x = self.u_flow
+        flow_y = self.v_flow
+        speed = self.speed
+
+        ax.clear()
+        # 起点
+        # flow_x中保存x的流速网格
+        # flow_y中保存y的流速网格
+        ax.scatter(*start_point, color='blue', label='Start Point', zorder=5)
+        # 目标点
+        ax.scatter(*target, color='green', label='Target Point', zorder=5)
+        # 障碍物
+        for circle in circles:
+            ax.add_patch(
+                plt.Circle(circle["center"], circle["radius"], color='red', alpha=0.3)
+            )
+        # 历史轨迹
+        if history:
+            hx, hy = zip(*history)
+            ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
+
+        # 流场绘制（下采样）
+        # TODO:改变网格试试呢
+        x = np.linspace(0, self.x_range, flow_x.shape[1])[::sample_rate]
+        y = np.linspace(0, self.y_range, flow_x.shape[0])[::sample_rate]
+        X, Y = np.meshgrid(x, y)
+        sampled_flow_x = flow_x[::sample_rate, ::sample_rate]
+        sampled_flow_y = flow_y[::sample_rate, ::sample_rate]
+        ax.quiver(
+        X, Y, sampled_flow_x * 2, sampled_flow_y * 2,  # 放大流场
+        scale=60, scale_units='width', color='black', alpha=0.5, zorder=2,
+        width=0.002, pivot='middle',
+        headwidth=3, headaxislength=3
+                )
+
+
+        # 当前智能体椭圆形状
+        # 角度方向，顺时针为正
+        ellipse_height = circle["radius"]  # 2a = 8
+        ellipse_width = ellipse_height / 1.5  # a/b = 1.5/1
+        ellipse = Ellipse(
+            xy=agent_pos, width=ellipse_width, height=ellipse_height, 
+            angle=-np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4
+        )
+        ax.add_patch(ellipse)
+
+        # 绘制局部坐标系（随智能体移动）
+        # 角度取顺时针为正
+        axis_length = 10.0  # 坐标轴的长度
+        cos_angle = np.cos(-agent_angle)
+        sin_angle = np.sin(-agent_angle)
+
+        # 绘制x轴（红色）和y轴（绿色）
+        ax.quiver(
+            agent_pos[0], agent_pos[1], axis_length * cos_angle, axis_length * sin_angle,
+            angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='red', label="Agent_X"
+        )
+        ax.quiver(
+            agent_pos[0], agent_pos[1], -axis_length * sin_angle, axis_length * cos_angle,
+            angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='green', label="Agent_Y"
+        )
+        # 设置坐标轴比例为相等
+        ax.set_aspect('equal', 'box')  # 确保坐标轴的比例相同，避免椭圆变形
+        
+        # 在右下角显示智能体的坐标、速度和流场速度
+        ax.text(
+            0.95, 0.05, 
+            (f"Agent (x, y): ({agent_pos[0]:.2f}, {agent_pos[1]:.2f})\n"
+                f"Angle: {agent_angle:.2f}\n"
+                f"Speed: {speed:.2f}"
+            ),
+            transform=ax.transAxes, fontsize=12, verticalalignment='bottom', horizontalalignment='right',
+            bbox=dict(facecolor='white', edgecolor='none', alpha=0.7)
+        )
+
+        # 设置图形属性
+        ax.set_xlim(0, self.x_range)
+        ax.set_ylim(0, self.y_range)
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.legend()
+        ax.set_title("Moving Trajectory")
+

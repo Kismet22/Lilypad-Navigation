@@ -74,7 +74,7 @@ class foil_env:
         self.flow_speed = 0
         self.include_flow = include_flow
 
-        # TODO:start the server
+        # start the server
         flow_flag = 'true' if self.include_flow else 'false'
         while True:
             port = random.randint(6000, 8000)
@@ -128,9 +128,11 @@ class foil_env:
                  "pressure_7": state_1[12], "pressure_8": state_1[13]}
         # TODO:
         print("pos_x, y:", state_1[3], state_1[4])
-        print("angel:", state_1[5])
-        print("vel_x, y", state_1[0], state_1[1])
-        print("vel_angle", state_1[2])
+        print("angle_rad:", state_1[5])
+        print("angle_degree:", np.degrees(state_1[5]))
+        print("vel_x, y:", state_1[0], state_1[1])
+        print("vel_angle_rad:", state_1[2])
+        print("vel_angle_degree:", np.degrees(state_1[2]))
         print("------------------------------------------------")
 
         # step agent position
@@ -185,7 +187,7 @@ class foil_env:
     def reset(self):
         print("target_pos:", self.target_position)
         self.step_counter=0
-        # TODO: reset true environment
+        # reset true environment
         action_json = {"v1": 0, "v2": 0, "v3": 0}
         res_str = self.proxy.connect.reset(json.dumps(action_json))  # 调用 reset 获取新状态
         # self.show_info(res_str)  # 显示返回的状态信息
