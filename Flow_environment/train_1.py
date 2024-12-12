@@ -8,6 +8,7 @@ import numpy as np
 from datetime import datetime
 from termcolor import colored
 import time
+# from env import flow_field_env_2
 from env import flow_field_env_1
 
 # 将设备设置与hjbppo.py中相同
@@ -27,29 +28,29 @@ def train(model_id, render_mode=None, checkpoint_path=None):
 
     # 一个episode中的最大时间步数,存在环境时间限制时,最大时间步应该大于环境时间限制
     # max time_steps in one episode
-    # 4000
-    max_steps = 300
+    # TODO:4000步会不会有点太多了
+    max_steps = 4000
     max_ep_len = max_steps + 20
     # 结束训练的总训练步数
     # break training loop if timesteps > max_training_timesteps
-    max_training_timesteps = int(2e6)
+    max_training_timesteps = int(4e6)
 
     # 打印/保存episode奖励均值
     # Note : print/log frequencies should be more than max_ep_len
     # print avg reward in the interval (in num timesteps)
-    print_freq = max_ep_len * 5
+    print_freq = max_ep_len * 3
     # log avg reward in the interval (in num timesteps)
-    log_freq = max_ep_len * 5
+    log_freq = max_ep_len * 3
 
     # 存储模型间隔
     # save model frequency (in num timesteps)
-    save_model_freq = int(1e4)
+    save_model_freq = int(4e4)
 
     # 注意，这里的标准差信息都是针对网络直接输出而言，即最终网络激活函数的归一化输出[-1, 1]作为均值的方差
     # 初始方差
     action_std = 0.8  # starting std for action distribution (Multivariate Normal)
     # 方差更新缩减值
-    action_std_decay_rate = 0.08  # linearly decay action_std (action_std = action_std - action_std_decay_rate)
+    action_std_decay_rate = 0.04  # linearly decay action_std (action_std = action_std - action_std_decay_rate)
     # 最小方差
     min_action_std = 0.04  # minimum action_std (stop decay after action_std <= min_action_std)
     # 方差缩减频率
@@ -59,7 +60,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     ################ 强化学习超参数设置 ################
     # 网络更新频率
     # update policy every n timesteps
-    update_timestep = max_ep_len * 8
+    update_timestep = max_ep_len * 5
     # update policy for K epochs in one PPO update
     K_epochs = 40
 
@@ -79,8 +80,10 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     parser_1 = argparse.ArgumentParser()
     args_1, unknown = parser_1.parse_known_args()
     args_1.action_interval = 10
-    target = np.array([200, 64])
-    env = flow_field_env_1.foil_env(args_1, max_step=max_steps, target_position=target)
+    # target = np.array([200, 64])
+    # env = flow_field_env_1.foil_env(args_1, max_step=max_steps, target_position=target)
+    env = flow_field_env_1.foil_env(args_1, max_step=max_steps)
+    # env = flow_field_env_2.foil_env(args_1, max_step=max_steps)
 
     # 状态空间
     # state space dimension
@@ -221,6 +224,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
         print(f"Loading checkpoint from: {checkpoint_path}")
         ppo_agent.load_full(checkpoint_path)
         print("Model loaded successfully.")
+        print("============================================================================================")
         # 当前时间步
         time_step = 0
         # 当前回合数
@@ -240,6 +244,8 @@ def train(model_id, render_mode=None, checkpoint_path=None):
                         i_episode = int(last_line_values[0])  # 提取回合数
                         time_step = int(last_line_values[1])  # 提取时间步
                         max_model_avg_return = float(last_line_values[2])  # 提取最大平均回报
+                        _init_std = float(last_line_values[3])
+                        action_std = _init_std
                         log_f.close()
                         print(f"Loaded values from the last log entry: i_episode = {i_episode}, time_step = {time_step}, max_model_avg_return = {max_model_avg_return}")
                     except ValueError as e:
@@ -403,6 +409,7 @@ if __name__ == '__main__':
 
     # 解析命令行参数
     args = parser.parse_args()
+
     # 从 args 中获取参数
     start_id = args.start_id
     train_times = args.train_times
@@ -420,10 +427,11 @@ if __name__ == '__main__':
     start_time = datetime.now().replace(microsecond=0)
     for i in range(start_id, start_id + train_times):
         print(f'======================== Training ID = {i} ========================')
-        if i:
-            train(i)
-        else:
-            train(i, checkpoint_path=checkpoint_path)
+        train(i, checkpoint_path=checkpoint_path)
+        # if i:
+        #     train(i)
+        # else:
+        #     train(i, checkpoint_path=checkpoint_path)
 
     print(
         colored("============================================================================================", 'red'))

@@ -9,9 +9,15 @@ import numpy as np
 from datetime import datetime
 from termcolor import colored
 import time
+# from env import flow_field_env_2
 from env import flow_field_env_1
 
-ppo_path = './models/PPO_xonly.pth'
+# ppo_path = './models/PPO_xonly.pth'
+# ppo_path = './models/PPO_xy6.pth'
+ppo_path = './models/PPO_xy14.pth'
+# ppo_path = './models/PPO_xy14_2.pth' # 最新
+# ppo_path = './models/PPO_xy14_4.pth'
+# ppo_path = './models/PPO_xy14_3.pth' # 奖励最大
 save_dir = './model_output'
 action_name = "action_ppo.csv"
 
@@ -55,7 +61,9 @@ def success_rate_test(env_in, agent_in, test_time, _max_ep_len, _agent_name, _if
 def test():
     print("============================================================================================")
 
-    max_time_step = 1000
+    # max_time_step = 1000
+    # max_ep_len = max_time_step + 100
+    max_time_step = 4000
     max_ep_len = max_time_step + 100
 
     # 判断动作空间是否连续
@@ -78,9 +86,10 @@ def test():
     parser_1 = argparse.ArgumentParser()
     args_1, unknown = parser_1.parse_known_args()
     args_1.action_interval = 10
-    target = np.array([200, 64])
-    env = flow_field_env_1.foil_env(args_1, max_step=max_time_step, target_position=target, include_flow=True)
-
+    # target = np.array([200, 64])
+    # env = flow_field_env_2.foil_env(args_1, max_step=max_time_step, target_position=target, include_flow=True)
+    # env = flow_field_env_2.foil_env(args_1, max_step=max_time_step, include_flow=True) # 状态空间维度6
+    env = flow_field_env_1.foil_env(args_1, max_step=max_time_step, include_flow=True) # 状态空间维度14
     # 状态空间
     # state space dimension
     state_dim = env.observation_space.shape[0]

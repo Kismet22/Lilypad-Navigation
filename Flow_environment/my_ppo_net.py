@@ -453,7 +453,7 @@ class Classic_PPO:
         }
         torch.save(checkpoint, filename)
 
-    def load_full(self, filename):
+    def load_full(self, filename, _init_std=None):
         # 将网络数据和优化器数据都加载出来
         print("=> Loading checkpoint")
         checkpoint = torch.load(filename, weights_only=False)

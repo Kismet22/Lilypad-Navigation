@@ -6,6 +6,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import argparse
 from env import flow_field_env
 import numpy as np
+from scipy.ndimage import gaussian_filter
+from scipy.signal import argrelextrema
 
 
 max_steps = 400
@@ -17,10 +19,9 @@ env = flow_field_env.foil_env(args_1, max_step=max_steps, include_flow=True)
 
 def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x = None, flow_y = None, speed=None, sample_rate=10):
     ax.clear()
-    
+    x_range = env.y_range # 130
+    y_range = env.x_range # 320
     # 起点
-    # flow_x中保存x的流速网格
-    # flow_y中保存y的流速网格
     ax.scatter(*start_point, color='blue', label='Start Point', zorder=5)
     # 目标点
     ax.scatter(*target, color='green', label='Target Point', zorder=5)
@@ -33,25 +34,47 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
     if history:
         hx, hy = zip(*history)
         ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
+    
+    """“
+    # 生成网格坐标
+    y, x = np.mgrid[0:flow_x.shape[0], 0:flow_x.shape[1]]
 
+    # 计算速度模长
+    velocity_magnitude = np.sqrt(flow_x**2 + flow_y**2)
+
+    # 高斯平滑，减少噪声
+    velocity_smoothed = gaussian_filter(velocity_magnitude, sigma=1.0)
+
+    # 寻找局部最小值（严格检查每个点是否比上下左右邻居小）
+    local_minima = (velocity_smoothed < np.roll(velocity_smoothed, 1, axis=0)) & \
+                   (velocity_smoothed < np.roll(velocity_smoothed, -1, axis=0)) & \
+                   (velocity_smoothed < np.roll(velocity_smoothed, 1, axis=1)) & \
+                   (velocity_smoothed < np.roll(velocity_smoothed, -1, axis=1))
+
+    # 获取局部最小值的位置
+    local_minima_y, local_minima_x = np.where(local_minima)
+
+    # 转换为坐标
+    vortex_centers = [(x[j, i], y[j, i]) for j, i in zip(local_minima_y, local_minima_x)]
+    print("Find_centers:", vortex_centers)
+    print("_init_centers:",circles)
+    """
     # 流场绘制（下采样）
-    # TODO:改变网格试试呢
-    x = np.linspace(0, env.x_range, flow_x.shape[1])[::sample_rate]
-    y = np.linspace(0, env.y_range, flow_x.shape[0])[::sample_rate]
+    # flow_x中保存x的流速网格
+    # flow_y中保存y的流速网格
+    # TODO:验证流场的摆放
+    x = np.linspace(0, x_range, flow_x.shape[1])[::sample_rate]
+    y = np.linspace(0, y_range, flow_x.shape[0])[::sample_rate]
     X, Y = np.meshgrid(x, y)
     sampled_flow_x = flow_x[::sample_rate, ::sample_rate]
     sampled_flow_y = flow_y[::sample_rate, ::sample_rate]
+    # 调换 X 和 Y 坐标，交换流场分量
     ax.quiver(
-    X, Y, sampled_flow_x * 2, sampled_flow_y * 2,  # 放大流场
-    scale=60, scale_units='width', color='black', alpha=0.5, zorder=2,
-    width=0.002, pivot='middle',
-    headwidth=3, headaxislength=3
-            )
-
-
-    # ax.quiver(X, Y, sampled_flow_x, sampled_flow_y, scale=50, color='black', alpha=0.5, zorder=2)
-    # 流线图
-    # ax.streamplot(X, Y, sampled_flow_x, sampled_flow_y, color='black', linewidth=1, density=0.8, arrowsize=1.2)
+        Y, X, sampled_flow_y * 2, sampled_flow_x * 2,  # 放大流场并交换流场方向
+        scale=80, scale_units='width', color='black', alpha=0.5, zorder=2,
+        width=0.002, pivot='middle',
+        headwidth=3, headaxislength=3
+    )
 
     # 当前智能体椭圆形状
     # 角度方向，顺时针为正
@@ -80,21 +103,23 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
     )
     # 设置坐标轴比例为相等
     ax.set_aspect('equal', 'box')  # 确保坐标轴的比例相同，避免椭圆变形
-    
+   
     # 在右下角显示智能体的坐标、速度和流场速度
     ax.text(
         0.95, 0.05, 
         (f"Agent (x, y): ({agent_pos[0]:.2f}, {agent_pos[1]:.2f})\n"
-            f"Angle: {agent_angle:.2f}\n"
-            f"Speed: {speed:.2f}"
-         ),
+            f"Angle/rad: {agent_angle:.2f}\n"
+            f"Angle/°: {np.degrees(agent_angle):.2f}\n"
+            f"Speed/m/s: {speed:.2f}"
+        ),
         transform=ax.transAxes, fontsize=12, verticalalignment='bottom', horizontalalignment='right',
         bbox=dict(facecolor='white', edgecolor='none', alpha=0.7)
     )
-
     # 设置图形属性
-    ax.set_xlim(0, env.x_range)
-    ax.set_ylim(0, env.y_range)
+    # TODO:改变图像摆放的位置
+    ax.set_xlim(0, y_range)
+    ax.set_ylim(0, x_range)
+    ax.set_aspect('equal', adjustable='box')
     ax.grid(True, linestyle='--', alpha=0.5)
     ax.legend()
     ax.set_title("Moving Trajectory")
@@ -108,12 +133,11 @@ def reset_env():
     agent_pos = env.agent_pos
     agent_angle = env.state[5]
     history = [agent_pos]
-    flow_x = env.u_flow
-    flow_y = env.v_flow
+    flow_x = env.v_flow
+    flow_y = env.u_flow
     a_speed = env.speed
     f_speed = env.flow_speed
     plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed)
-    #plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle)
     status_label.config(text="Status: Ready", foreground="green")
     canvas.draw()
 
@@ -126,8 +150,8 @@ def update_trajectory():
         # 获取新的智能体位置和角度
         agent_pos = env.agent_pos
         agent_angle = env.state[5]
-        flow_x = env.u_flow
-        flow_y = env.v_flow
+        flow_x = env.v_flow
+        flow_y = env.u_flow
         a_speed = env.speed
         f_speed = env.flow_speed
         history.append(agent_pos)
@@ -153,8 +177,8 @@ env.reset()
 start_point = env.agent_pos
 target = env.target_position
 circles = env.circles
-flow_x = env.u_flow
-flow_y = env.v_flow
+flow_x = env.v_flow
+flow_y = env.u_flow
 a_speed = env.speed
 history = [start_point]
 
