@@ -48,7 +48,8 @@ class Body {
   ArrayList<PVector> coords=new ArrayList<PVector>();
   int n;
   boolean convex=false;
-  boolean pressed=false, xfree=true, yfree=true, pfree=true;
+  // pfree true -> false,强制智能体不作旋转
+  boolean pressed=false, xfree=true, yfree=true, pfree=false;
   PVector xc, dxc=new PVector(), dotxc=new PVector(), ddotxc=new PVector();
   PVector handle=new PVector(), ma=new PVector();
   OrthoNormal orth[];
