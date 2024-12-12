@@ -23,6 +23,7 @@ class foil_env:
     def __init__(self, config=None, info='', local_port=None, network_port=None, target_position=None, max_step=None, include_flow=False):
         # n = 20 * 16  m = 8 * 16 r = 3 * 16 每个圆柱的半径是1*16
         # m 和 n 对应模拟窗格的大小
+        # 实际的位移大小应该是Δx/16
         # 三角形排布 [n/6, n/6, n/6+r*cos(theta)] [m/2 + r/2, m/2 - r/2, m/2]
         # 智能体位置：[6*n/8 , m/2](240, 64)
         self.x_range = 20 * 16
@@ -34,10 +35,15 @@ class foil_env:
         # 智能体椭圆信息
         self.ellipse_b = self.body_r/4 # 竖直摆放的椭圆 b = 1.5a
         self.ellipse_a = self.ellipse_b / 1.5
+        # self.circles = [
+        #     {"center": (self.n/6, self.m/2 + self.r/2), "radius": self.body_r/2},
+        #     {"center": (self.n/6, self.m/2 - self.r/2), "radius": self.body_r/2},
+        #     {"center": (self.n/6 + self.r*cos(pi/6), self.m/2), "radius": self.body_r/2}
+        # ]
         self.circles = [
-            {"center": (self.n/6, self.m/2 + self.r/2), "radius": self.body_r/2},
-            {"center": (self.n/6, self.m/2 - self.r/2), "radius": self.body_r/2},
-            {"center": (self.n/6 + self.r*cos(pi/6), self.m/2), "radius": self.body_r/2}
+            {"center": (53, 32), "radius": self.body_r/2},
+            {"center": (53, 96), "radius": self.body_r/2},
+            {"center": (109, 64), "radius": self.body_r/2}
         ]
         self.observation_dim = 14
         self.action_dim = 3
@@ -48,12 +54,12 @@ class foil_env:
             self.t_step_max = max_step
         else:
             self.t_step_max = self.steps_default
-        self.state = [0, 0, 0, 0, 0, 0]
+        self.state = np.zeros(self.observation_dim)
         # TODO:change action range
-        #low = np.array([-20.0, -20, -0.1], dtype=np.float32)  # 每个维度的下界
-        #high = np.array([20.0, 20, 0.1], dtype=np.float32)  # 每个维度的上界
-        low = np.array([-20.0, -0.0001, -0.0001], dtype=np.float32)  # 每个维度的下界
-        high = np.array([20.0, 0.0001, 0.0001], dtype=np.float32)  # 每个维度的上界
+        low = np.array([-15.0, -8, -0.0001], dtype=np.float32)  # 每个维度的下界
+        high = np.array([15.0, 8, 0.0001], dtype=np.float32)  # 每个维度的上界
+        # low = np.array([-20.0, -0.0001, -0.0001], dtype=np.float32)  # 每个维度的下界
+        # high = np.array([20.0, 0.0001, 0.0001], dtype=np.float32)  # 每个维度的上界
         self.low = low
         self.high = high
         self.agent_pos = np.array([0.0, 0.0])
@@ -78,6 +84,7 @@ class foil_env:
         self.u_flow = []
         self.v_flow = []
         self.speed = 0
+        self.flow_speed = 0
         self.include_flow = include_flow
 
         # 绘图
@@ -106,6 +113,7 @@ class foil_env:
             self.proxy = ServerProxy(f"http://localhost:{port}/")
         else:
             self.proxy = ServerProxy(f"http://localhost:{local_port}/")
+
 
     def step(self, action):
         # 动作裁剪
@@ -148,24 +156,29 @@ class foil_env:
         # step state:[pos_x, pos_y] -> [dx, dy]
         state_1[3], state_1[4] = self.target_position[0] - state_1[3], self.target_position[1] - state_1[4]
         state_2 = state_1[:6]
+        # 完整的state
         self.state = state_1
+        # 二自由度运动时,仅保留位置信息的状态
+        # self.state_pos = [state_1[0], state_1[1], state_1[3], state_1[4]]
         # step reward
         # 检查出界
         if self.is_out_of_bounds():
             _truncated = True
-            # TODO:出界损失改为0
+            # TODO:出界损失的选择
             # _reward = -200
             _reward = -0
             print(colored("**** Episode Finished **** Hit Boundary.", 'red'))
         else:
-            # 检查撞涡，应该不需要?
+            # 检查撞涡
             if self.is_in_circle(self.circles):
                 _truncated = True
-                _reward = -0
+                # TODO:撞涡损失的选择
+                _reward = -1200
                 print(colored("**** Episode Finished **** Hit Circles.", 'red'))
             # 检查超时
             elif self.step_counter >= self.t_step_max or self.done:
                 _truncated = True
+                # TODO:超时损失的选择
                 _reward = -0
                 print(colored("**** Episode Finished **** Reaches Env Time limit.", 'blue'))
             # 正常情况
@@ -173,7 +186,7 @@ class foil_env:
                 # 检查终点
                 if self.is_reach_target():
                     _terminated = True
-                    _reward = 500
+                    _reward = 5000
                     print(colored("**** Episode Finished **** SUCCESS.", 'green'))
                 # 运行途中
                 else:
@@ -192,6 +205,7 @@ class foil_env:
             self.u_flow = v_x
             self.v_flow = v_y
             self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
+            self.flow_speed = np.sqrt(v_x[int(self.agent_pos[0])][int(self.agent_pos[1])]**2 +v_y[int(self.agent_pos[0])][int(self.agent_pos[1])]**2)
             self._render_frame()
 
         return self.state, self.reward, _terminated, _truncated, _info
@@ -227,6 +241,7 @@ class foil_env:
             self.u_flow = v_x
             self.v_flow = v_y
             self.speed = np.sqrt(state_1[0]**2 + state_1[1]**2)
+            self.flow_speed = np.sqrt(v_x[int(self.agent_pos[0])][int(self.agent_pos[1])]**2 +v_y[int(self.agent_pos[0])][int(self.agent_pos[1])]**2)
             self._render_frame()
 
         return self.state, _info
@@ -259,13 +274,22 @@ class foil_env:
                     state['theta_velocity']] + state['SparsePressure']
         state_ls = list(np.nan_to_num(np.array(state_ls), nan=0))
         return state_ls
-
+    
     def is_in_circle(self, circles):
+        # 不严格的撞涡判断
         for circle in circles:
             center = np.array(circle["center"])
             radius = circle["radius"]
+            
+            a = self.ellipse_a  # 椭圆的半长轴
+            b = self.ellipse_b
+            theta = -self.state[5]
+
             distance = np.linalg.norm(self.agent_pos - center)
-            if distance < radius:
+
+            # 距离小于长的半轴+半径，及认为发生碰撞
+            # TODO:把撞涡的判定范围改宽一点
+            if distance <= (b + radius):
                 return True
         return False
     
@@ -274,7 +298,7 @@ class foil_env:
         x_c, y_c = self.agent_pos  # 椭圆中心
         a = self.ellipse_a  # 椭圆的半长轴
         b = self.ellipse_b  # 椭圆的半短轴
-        theta = self.state[5]  # 椭圆的旋转角度（弧度）
+        theta = - self.state[5]  # 椭圆的旋转角度（弧度）
 
         # 椭圆顶点（未旋转前）
         vertices = [(a, 0), (-a, 0),  # 长轴方向的两个点
@@ -302,7 +326,7 @@ class foil_env:
         x_o, y_o = self.target_position  # 目标点位置
 
         # 获取椭圆参数
-        theta = self.state[5]  # 椭圆的旋转角度，单位：弧度
+        theta = - self.state[5]  # 椭圆的旋转角度，单位：弧度
         a = self.ellipse_a  # 椭圆的半长轴
         b = self.ellipse_b  # 椭圆的半短轴
 
@@ -352,7 +376,9 @@ class foil_env:
 
         # 调用 plot_env 绘制图形
         self.plot_env(ax)  # 传递 ax 给 plot_env 用于绘图
-        plt.draw()  # 刷新图形
+        # 刷新
+        plt.draw()  
+        # 暂停
         plt.pause(self.frame_pause)  # 暂停以更新图形
 
     def plot_env(self, ax, sample_rate=10):
@@ -362,9 +388,10 @@ class foil_env:
         circles = self.circles
         agent_pos = self.agent_pos
         agent_angle = self.angle
-        flow_x = self.u_flow
-        flow_y = self.v_flow
+        flow_x = self.v_flow
+        flow_y = self.u_flow
         speed = self.speed
+        flow_speed = self.flow_speed
 
         ax.clear()
         # 起点
@@ -384,22 +411,23 @@ class foil_env:
             ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
 
         # 流场绘制（下采样）
-        # TODO:改变网格试试呢
-        x = np.linspace(0, self.x_range, flow_x.shape[1])[::sample_rate]
-        y = np.linspace(0, self.y_range, flow_x.shape[0])[::sample_rate]
+        x = np.linspace(0, self.y_range, flow_x.shape[1])[::sample_rate]
+        y = np.linspace(0, self.x_range, flow_x.shape[0])[::sample_rate]
         X, Y = np.meshgrid(x, y)
         sampled_flow_x = flow_x[::sample_rate, ::sample_rate]
         sampled_flow_y = flow_y[::sample_rate, ::sample_rate]
+        # 调换 X 和 Y 坐标，交换流场分量
         ax.quiver(
-        X, Y, sampled_flow_x * 2, sampled_flow_y * 2,  # 放大流场
-        scale=60, scale_units='width', color='black', alpha=0.5, zorder=2,
-        width=0.002, pivot='middle',
-        headwidth=3, headaxislength=3
-                )
+            Y, X, sampled_flow_y * 2, sampled_flow_x * 2,  # 放大流场并交换流场方向
+            scale=80, scale_units='width', color='black', alpha=0.5, zorder=2,
+            width=0.002, pivot='middle',
+            headwidth=3, headaxislength=3
+        )
 
 
         # 当前智能体椭圆形状
-        # 角度方向，顺时针为正
+        # TODO:确定角度的方向，是顺时针为正还是逆时针为正
+        # TODO：确定椭圆的摆放模式
         ellipse_height = circle["radius"]  # 2a = 8
         ellipse_width = ellipse_height / 1.5  # a/b = 1.5/1
         ellipse = Ellipse(
@@ -409,8 +437,9 @@ class foil_env:
         ax.add_patch(ellipse)
 
         # 绘制局部坐标系（随智能体移动）
-        # 角度取顺时针为正
-        axis_length = 10.0  # 坐标轴的长度
+        # TODO：确定角度的方向，是顺时针为正还是逆时针为正
+        # 坐标轴的长度
+        axis_length = 10.0
         cos_angle = np.cos(-agent_angle)
         sin_angle = np.sin(-agent_angle)
 
@@ -424,14 +453,16 @@ class foil_env:
             angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='green', label="Agent_Y"
         )
         # 设置坐标轴比例为相等
-        ax.set_aspect('equal', 'box')  # 确保坐标轴的比例相同，避免椭圆变形
+        # 确保坐标轴的比例相同，避免椭圆变形
+        ax.set_aspect('equal', 'box')  
         
         # 在右下角显示智能体的坐标、速度和流场速度
         ax.text(
             0.95, 0.05, 
             (f"Agent (x, y): ({agent_pos[0]:.2f}, {agent_pos[1]:.2f})\n"
-                f"Angle: {agent_angle:.2f}\n"
-                f"Speed: {speed:.2f}"
+                f"Angle/°: {np.degrees(agent_angle):.2f}\n"
+                f"Speed/m/s: {speed:.2f}\n"
+                # f"Flow_Speed/m/s: {flow_speed:.2f}\n"
             ),
             transform=ax.transAxes, fontsize=12, verticalalignment='bottom', horizontalalignment='right',
             bbox=dict(facecolor='white', edgecolor='none', alpha=0.7)
