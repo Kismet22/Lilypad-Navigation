@@ -4,7 +4,25 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import argparse
+
+
+
+
+
+
+
 from env import flow_field_env
+# from env import flow_field_env_debug_zyp as flow_field_env
+
+
+
+
+
+
+
+
+
+
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.signal import argrelextrema
@@ -14,7 +32,11 @@ max_steps = 400
 parser_1 = argparse.ArgumentParser()
 args_1, unknown = parser_1.parse_known_args()
 args_1.action_interval = 10
-env = flow_field_env.foil_env(args_1, max_step=max_steps, include_flow=True)
+# _start = np.array([float(150), float(64)])
+_start = np.array([float(240), float(64)])
+_target = np.array([float(190), float(64)])
+env = flow_field_env.foil_env(args_1, max_step=max_steps, include_flow=True, start_position=_start, target_position=_target)
+# env = flow_field_env.foil_env(args_1, max_step=max_steps, include_flow=True)
 
 
 def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x = None, flow_y = None, speed=None, sample_rate=10):
@@ -35,30 +57,6 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
         hx, hy = zip(*history)
         ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
     
-    """“
-    # 生成网格坐标
-    y, x = np.mgrid[0:flow_x.shape[0], 0:flow_x.shape[1]]
-
-    # 计算速度模长
-    velocity_magnitude = np.sqrt(flow_x**2 + flow_y**2)
-
-    # 高斯平滑，减少噪声
-    velocity_smoothed = gaussian_filter(velocity_magnitude, sigma=1.0)
-
-    # 寻找局部最小值（严格检查每个点是否比上下左右邻居小）
-    local_minima = (velocity_smoothed < np.roll(velocity_smoothed, 1, axis=0)) & \
-                   (velocity_smoothed < np.roll(velocity_smoothed, -1, axis=0)) & \
-                   (velocity_smoothed < np.roll(velocity_smoothed, 1, axis=1)) & \
-                   (velocity_smoothed < np.roll(velocity_smoothed, -1, axis=1))
-
-    # 获取局部最小值的位置
-    local_minima_y, local_minima_x = np.where(local_minima)
-
-    # 转换为坐标
-    vortex_centers = [(x[j, i], y[j, i]) for j, i in zip(local_minima_y, local_minima_x)]
-    print("Find_centers:", vortex_centers)
-    print("_init_centers:",circles)
-    """
     # 流场绘制（下采样）
     # flow_x中保存x的流速网格
     # flow_y中保存y的流速网格
@@ -77,20 +75,23 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
     )
 
     # 当前智能体椭圆形状
-    # 角度方向，顺时针为正
+    # 角度方向，顺时针为正?????
+    # TODO:椭圆是如何摆放的
     ellipse_height = circle["radius"]  # 2a = 8
     ellipse_width = ellipse_height / 1.5  # a/b = 1.5/1
+    # ellipse_width = circle["radius"]  # 2a = 8
+    # ellipse_height = ellipse_width / 1.5  # a/b = 1.5/1
     ellipse = Ellipse(
         xy=agent_pos, width=ellipse_width, height=ellipse_height, 
-        angle=-np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4
+        angle=np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4
     )
     ax.add_patch(ellipse)
 
     # 绘制局部坐标系（随智能体移动）
-    # 角度取顺时针为正
+    # 角度取顺时针为正?????
     axis_length = 10.0  # 坐标轴的长度
-    cos_angle = np.cos(-agent_angle)
-    sin_angle = np.sin(-agent_angle)
+    cos_angle = np.cos(agent_angle)
+    sin_angle = np.sin(agent_angle)
 
     # 绘制x轴（红色）和y轴（绿色）
     ax.quiver(
@@ -130,6 +131,8 @@ def plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, 
 def reset_env():
     global history, agent_pos
     env.reset()
+    start = env.start_position
+    target = env.target_position
     agent_pos = env.agent_pos
     agent_angle = env.state[5]
     history = [agent_pos]
@@ -137,7 +140,7 @@ def reset_env():
     flow_y = env.u_flow
     a_speed = env.speed
     f_speed = env.flow_speed
-    plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed)
+    plot_env(ax, start, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed)
     status_label.config(text="Status: Ready", foreground="green")
     canvas.draw()
 
@@ -148,6 +151,8 @@ def update_trajectory():
         _, _, terminated, truncated, _ = env.step(action)
         
         # 获取新的智能体位置和角度
+        start = env.start_position
+        target = env.target_position
         agent_pos = env.agent_pos
         agent_angle = env.state[5]
         flow_x = env.v_flow
@@ -157,7 +162,7 @@ def update_trajectory():
         history.append(agent_pos)
         
         # 绘制环境和轨迹
-        plot_env(ax, start_point, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed)
+        plot_env(ax, start, target, circles, agent_pos, history, agent_angle, flow_x, flow_y, a_speed)
 
         # 根据是否结束状态更新提示信息
         if terminated:

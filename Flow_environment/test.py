@@ -1,7 +1,7 @@
 import gym
 import csv
-import my_ppo_net
-from my_ppo_net import Classic_PPO
+import my_ppo_net_1
+from my_ppo_net_1 import Classic_PPO
 import os
 import argparse
 import torch
@@ -12,12 +12,9 @@ import time
 # from env import flow_field_env_2
 from env import flow_field_env_1
 
-# ppo_path = './models/PPO_xonly.pth'
-# ppo_path = './models/PPO_xy6.pth'
-ppo_path = './models/PPO_xy14.pth'
-# ppo_path = './models/PPO_xy14_2.pth' # 最新
-# ppo_path = './models/PPO_xy14_4.pth'
-# ppo_path = './models/PPO_xy14_3.pth' # 奖励最大
+# ppo_path = './models/PPO_1.pth' # [15, 8]范围模型,锁旋转自由度，定起点终点[240,64]和[73,64]，能实现成功导航
+# ppo_path = './models/PPO_t1.pth' # 20250116 ogppo  stable_flow [240,64] to [190, 64](PPO_f1为失败的序列)
+ppo_path = './models/PPO_t2_2.pth' # 20250117 ogppo  stable_flow [240,64] to [190, 32](_1和_2为两组训练得到的不同策略)
 save_dir = './model_output'
 action_name = "action_ppo.csv"
 
@@ -60,11 +57,8 @@ def success_rate_test(env_in, agent_in, test_time, _max_ep_len, _agent_name, _if
 
 def test():
     print("============================================================================================")
-
-    # max_time_step = 1000
-    # max_ep_len = max_time_step + 100
-    max_time_step = 4000
-    max_ep_len = max_time_step + 100
+    max_steps = 4000
+    max_ep_len = max_steps + 20
 
     # 判断动作空间是否连续
     # continuous action space; else discrete
@@ -86,10 +80,10 @@ def test():
     parser_1 = argparse.ArgumentParser()
     args_1, unknown = parser_1.parse_known_args()
     args_1.action_interval = 10
-    # target = np.array([200, 64])
-    # env = flow_field_env_2.foil_env(args_1, max_step=max_time_step, target_position=target, include_flow=True)
-    # env = flow_field_env_2.foil_env(args_1, max_step=max_time_step, include_flow=True) # 状态空间维度6
-    env = flow_field_env_1.foil_env(args_1, max_step=max_time_step, include_flow=True) # 状态空间维度14
+    _start = np.array([float(240), float(64)])
+    # _target = np.array([float(190), float(64)])
+    _target = np.array([float(190), float(32)])
+    env = flow_field_env_1.foil_env(args_1, max_step=max_steps, target_position=_target, start_position=_start, include_flow=True)
     # 状态空间
     # state space dimension
     state_dim = env.observation_space.shape[0]
@@ -107,12 +101,17 @@ def test():
     else:
         # 离散动作空间，输出可选的动作数
         action_dim = env.action_space.n
+    action_std = 0.0001
 
     # initialize RL agent
+    # ppo_agent = Classic_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+    #                         has_continuous_action_space,
+    #                         action_std_init=action_std_4_test, continuous_action_output_scale=action_output_scale,
+    #                         continuous_action_output_bias=action_output_bias, mini_batch_size=32)
     ppo_agent = Classic_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-                            has_continuous_action_space,
-                            action_std_init=action_std_4_test, continuous_action_output_scale=action_output_scale,
-                            continuous_action_output_bias=action_output_bias, mini_batch_size=32)
+                        has_continuous_action_space,
+                        action_std, continuous_action_output_scale=action_output_scale,
+                        continuous_action_output_bias=action_output_bias)
 
     ppo_agent.load_full(ppo_path)
 

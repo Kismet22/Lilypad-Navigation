@@ -85,7 +85,7 @@ class ActorCritic(nn.Module):
                 nn.Linear(self.hidden_layer_dim, self.hidden_layer_dim),
                 nn.Tanh(),
                 nn.Linear(self.hidden_layer_dim, action_dim),
-                # 最终输出为(batch_size, action_dim),范围在[-1, 1]
+                # 最终输出为(batch_size, action_dim)
                 nn.Tanh()
             )
         else:
@@ -143,14 +143,9 @@ class ActorCritic(nn.Module):
             cov_mat = torch.diag(self.action_var).unsqueeze(dim=0)
             # 创建一个多元正态分布
             dist = MultivariateNormal(action_mean, cov_mat)
-
-            # print("action mean:", action_mean) # todo
-
         else:
             action_probs = self.actor(state)
             dist = Categorical(action_probs)
-
-
 
         # 从创建的分布中采样一个动作
         action = dist.sample()
@@ -195,7 +190,7 @@ class Classic_PPO:
     def __init__(self, state_dim, action_dim, lr_actor, lr_critic,
                  gamma, K_epochs, eps_clip, has_continuous_action_space,
                  action_std_init=0.6, hidden_layer_dim=128,
-                 continuous_action_output_scale=1.0, continuous_action_output_bias=0.0, mini_batch_size=32):
+                 continuous_action_output_scale=1.0, continuous_action_output_bias=0.0):
         """
         PPO constructor.
         :param state_dim: 状态空间维数
@@ -224,7 +219,6 @@ class Classic_PPO:
         self.K_epochs = K_epochs
         self.continuous_action_output_scale = continuous_action_output_scale
         self.continuous_action_output_bias = continuous_action_output_bias
-        self.mini_batch_size = mini_batch_size
 
         self.buffer = RolloutBuffer()  # 数据池
 
@@ -283,7 +277,7 @@ class Classic_PPO:
 
     def select_action(self, input_state):
         """
-        输入state,返回要采取的action,并保存action, action_logprob, state_val至buffer
+        输入state，返回要采取的action，并保存action, action_logprob, state_val至buffer
         :param input_state:
         :return: 经过线性变换的action
         """
@@ -317,10 +311,8 @@ class Classic_PPO:
             self.buffer.state_values.append(state_val)
             # 对action做线性变换
             action_raw = action.detach().cpu().numpy().flatten()
-            # print("action_raw:", action_raw)
             # action输出的范围为(-1, 1)
             action_out = action_raw * self.continuous_action_output_scale + self.continuous_action_output_bias
-            # print("action_out:", action_out)
             return action_out
 
         else:
@@ -336,182 +328,111 @@ class Classic_PPO:
             # .item()用于将包含一个元素的张量转换为 Python 的标量值。这个方法只能用于张量中仅包含一个元素的情况
             return action.item()
 
-    # def update(self):
-    #     """
-    #     更新K次网络。buffer中action, action_logprob, state_val在select_action时保存,reward与terminal从外部加入。
-    #     :return: None
-    #     """
-    #     # Monte Carlo estimate of returns
-    #     rewards = []
-    #     discounted_reward = 0
-
-    #     # 倒着处理buffer，为每一步生成一个monte-carlo的value-function采样
-    #     for reward, is_terminal in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)):
-    #         if is_terminal:
-    #             discounted_reward = 0
-    #         discounted_reward = reward + (self.gamma * discounted_reward)
-    #         rewards.insert(0, discounted_reward)
-
-    #     # Convert rewards to tensor and move to device
-    #     rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
-    #     # 计算优势并标准化
-    #     state_values = torch.tensor(self.buffer.state_values, dtype=torch.float32, device=device)
-    #     advantages = rewards.clone().detach() - state_values.clone().detach()
-    #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
-
-    #     # 将buffer中的state、action等按mini-batch分批读取
-    #     batch_size = len(self.buffer.states)
-    #     num_batches = batch_size // self.mini_batch_size  # 根据mini_batch_size计算batch的数量
-
-    #     # 优化策略K轮
-    #     for _ in range(self.K_epochs):
-    #         for i in range(num_batches):
-    #             # 逐步加载mini-batch数据
-    #             start_idx = i * self.mini_batch_size
-    #             end_idx = (i + 1) * self.mini_batch_size
-
-    #             # 检查并转换 states 数据类型
-    #             mini_batch_states = torch.stack([
-    #                 torch.tensor(state, dtype=torch.float32, device=device) if not isinstance(state,torch.Tensor) else state.to(device)
-    #                 for state in self.buffer.states[start_idx:end_idx]
-    #             ])
-
-    #             # 检查并转换 actions 数据类型
-    #             mini_batch_actions = torch.stack([
-    #                 torch.tensor(action, dtype=torch.float32, device=device) if not isinstance(action,torch.Tensor) else action.to(device)
-    #                 for action in self.buffer.actions[start_idx:end_idx]
-    #             ])
-
-    #             # 检查并转换 logprobs 数据类型
-    #             mini_batch_logprobs = torch.stack([
-    #                 torch.tensor(logprob, dtype=torch.float32, device=device) if not isinstance(logprob,torch.Tensor) else logprob.to(device)
-    #                 for logprob in self.buffer.logprobs[start_idx:end_idx]
-    #             ])
-
-    #             # 检查并转换 state_values 数据类型
-    #             mini_batch_state_values = torch.stack([
-    #                 torch.tensor(state_value, dtype=torch.float32, device=device) if not isinstance(state_value,torch.Tensor) else state_value.to(device)
-    #                 for state_value in self.buffer.state_values[start_idx:end_idx]
-    #             ])
-
-    #             # 使用 rewards 来计算 advantages
-    #             mini_batch_rewards = rewards[start_idx:end_idx]
-    #             mini_batch_advantages = advantages[start_idx:end_idx]
-
-    #             logprobs, state_values, dist_entropy = self.policy.evaluate(mini_batch_states, mini_batch_actions)
-
-    #             ratios = torch.exp(logprobs - mini_batch_logprobs.detach())
-
-    #             surr1 = ratios * mini_batch_advantages
-    #             surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * mini_batch_advantages
-    #             state_values = state_values.squeeze(-1)
-
-    #             loss = (-torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, mini_batch_rewards) -
-    #                     0.01 * dist_entropy)
-    #             # 梯度优化过程
-    #             self.optimizer.zero_grad()
-    #             loss.mean().backward()
-    #             self.optimizer.step()
-
-    #     self.policy_old.load_state_dict(self.policy.state_dict())
-
-    #     self.buffer.clear()
-
     def update(self):
         """
-        更新K次网络。buffer中action, action_logprob, state_val在select_action时保存,reward与terminal从外部加入。
+        更新K次网络。buffer中action, action_logprob, state_val在select_action时保存，reward与terminal从外部加入。
         :return: None
         """
         # Monte Carlo estimate of returns
         rewards = []
         discounted_reward = 0
 
-        # 倒着处理buffer，为每一步生成一个monte-carlo的value-function采样
+        # 倒着处理buffer，为每一步生成一个monte-carlo的value-function采样，代表在某个状态下一直MC采样到末尾得到的return
+        # 折扣回报的计算方式，符合r = r + γΣr
+        # reversed()反转操作
+        # zip()将两个可迭代的对象配对到一起
+
         for reward, is_terminal in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)):
             if is_terminal:
+                # 当一个时间步是终止状态时，之后的折扣回报将从零开始计算,这里是翻转之后的，则应该表示终止之前的计算
                 discounted_reward = 0
             discounted_reward = reward + (self.gamma * discounted_reward)
             rewards.insert(0, discounted_reward)
 
-        # Convert rewards to tensor and move to device
-        rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
+        # TODO: 从 normalize reward 变成 normalize advantage
+        # Normalizing the rewards
+        # 将数值转化为一个可用于网络计算的tensor形式
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
+        # rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
 
-        # 将buffer中的state、action等按mini-batch分批读取
-        batch_size = len(self.buffer.states)
-        num_batches = batch_size // self.mini_batch_size  # 根据mini_batch_size计算batch的数量
+        # TODO: 每次更新重新计算advantage
+        # buffer中原本是众多连续的一维张量
+        # convert list to tensor
+        # .stack()声明了堆叠方式,将张量在第'dim=n'的方向上进行了堆叠,在这里是第0维(batch_size)维度
+        # .squeeze()这个函数用于移除张量中维度为 1 的所有维度 (N,1)会变成(N,)
+        # .detach()分离张量，使得它不再参与梯度计算，这是为了确保训练中的状态张量不再影响后续的梯度更新
+        # 操作目的，将多个状态一起按同一批次进行处理
 
-        # 优化策略K轮
+        # 检查并转换 self.buffer.states 中的每个项
+        states_on_device = []
+        for state in self.buffer.states:
+            if isinstance(state, torch.Tensor):
+                # 如果已经是张量，确保它在正确的设备上
+                states_on_device.append(state.to(device))
+            else:
+                # 如果不是张量，将其转换为张量并放到正确的设备上
+                states_on_device.append(torch.tensor(state, dtype=torch.float32, device=device))
+        old_states = torch.squeeze(torch.stack(states_on_device, dim=0)).detach().to(device)  # 进行堆叠和其他操作
+
+        # 检查并转换 self.buffer.actions 中的每个项
+        actions_on_device = []
+        for action in self.buffer.actions:
+            if isinstance(action, torch.Tensor):
+                # 如果已经是张量，确保它在正确的设备上
+                actions_on_device.append(action.to(device))
+            else:
+                # 如果不是张量，将其转换为张量并放到正确的设备上
+                actions_on_device.append(torch.tensor(action, dtype=torch.float32, device=device))
+        old_actions = torch.squeeze(torch.stack(actions_on_device, dim=0)).detach().to(device)  # 进行堆叠和其他操作
+        old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach().to(device)
+        old_state_values = torch.squeeze(torch.stack(self.buffer.state_values, dim=0)).detach().to(device)
+
+        # calculate advantages
+        # Finding Surrogate Loss
+        # PPO第一部分损失函数的计算过程
+        # A(a|s)为r与critic_value的差值
+        # old_state_values是老的critic网络对每个状态的v值估计，而rewards是经过采样【且归一化】后的真实reward
+        advantages = rewards.detach() - old_state_values.detach()
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
+
+        # Optimize policy for K epochs
+        # 在K轮epochs中，优势函数不改变
         for _ in range(self.K_epochs):
-            for i in range(num_batches):
-                # 逐步加载mini-batch数据
-                start_idx = i * self.mini_batch_size
-                end_idx = (i + 1) * self.mini_batch_size
+            old_states = old_states.requires_grad_(True)  # 确保 old_states 可计算梯度
+            # Evaluating old actions and values，在新的policy下，评价老的数据。拿到一块时间步的logprobs, state_values
+            # dist_entropy是网络内部的交叉熵，第三部分损失函数
+            logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
 
-                # 检查并转换 states 数据类型
-                mini_batch_states = []
-                for state in self.buffer.states[start_idx:end_idx]:
-                    if isinstance(state, torch.Tensor):
-                        mini_batch_states.append(state.to(device))
-                    else:
-                        mini_batch_states.append(torch.tensor(state, dtype=torch.float32, device=device))
-                mini_batch_states = torch.stack(mini_batch_states)
+            # Finding the ratio (pi_theta / pi_theta__old)，因为带着个log所以用exp，评价新老policy的差异
+            # exp(log(new)- log(old)) = new/old
+            ratios = torch.exp(logprobs - old_logprobs.detach())
 
-                # 检查并转换 actions 数据类型
-                mini_batch_actions = []
-                for action in self.buffer.actions[start_idx:end_idx]:
-                    if isinstance(action, torch.Tensor):
-                        mini_batch_actions.append(action.to(device))
-                    else:
-                        mini_batch_actions.append(torch.tensor(action, dtype=torch.float32, device=device))
-                mini_batch_actions = torch.stack(mini_batch_actions)
+            """""""""
+            # Finding Surrogate Loss
+            # PPO第一部分损失函数的计算过程
+            # A(a|s)为r与critic_value的差值
+            advantages = rewards.detach() - state_values.detach()
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
+            """
+            surr1 = ratios * advantages
+            surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
 
-                # 检查并转换 logprobs 数据类型
-                mini_batch_logprobs = []
-                for logprob in self.buffer.logprobs[start_idx:end_idx]:
-                    if isinstance(logprob, torch.Tensor):
-                        mini_batch_logprobs.append(logprob.to(device))
-                    else:
-                        mini_batch_logprobs.append(torch.tensor(logprob, dtype=torch.float32, device=device))
-                mini_batch_logprobs = torch.stack(mini_batch_logprobs)
+            # final loss of clipped objective PPO
+            # 第一项是给actor网络用的，第二项是给critic网络用的，第三项也是给actor的，避免策略过早收敛
+            # 虽然loss写在了一起，但两个网络会各自计算和自己相关的梯度，这没什么问题
+            state_values = state_values.squeeze()  # 删除维度为1的轴,使两者的维度一致
+            loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rewards) - 0.01 * dist_entropy
 
-                # 检查并转换 state_values 数据类型
-                mini_batch_state_values = []
-                for state_value in self.buffer.state_values[start_idx:end_idx]:
-                    if isinstance(state_value, torch.Tensor):
-                        mini_batch_state_values.append(state_value.to(device))
-                    else:
-                        mini_batch_state_values.append(torch.tensor(state_value, dtype=torch.float32, device=device))
-                mini_batch_state_values = torch.stack(mini_batch_state_values)
-
-                # 使用 rewards 来计算 advantages
-                # rewards中保存的是全局计算得到的价值,这样设置没有问题
-                mini_batch_discount_rewards = rewards[start_idx:end_idx]  # Define mini_batch_rewards here
-                mini_batch_advantages = mini_batch_rewards.clone().detach() - mini_batch_state_values.clone().detach()
-                mini_batch_advantages = (mini_batch_advantages - mini_batch_advantages.mean()) / (mini_batch_advantages.std() + 1e-8)
-
-
-                # Evaluating old actions and values
-                logprobs, state_values, dist_entropy = self.policy.evaluate(mini_batch_states, mini_batch_actions)
-
-                # Finding the ratio (pi_theta / pi_theta__old)
-                ratios = torch.exp(logprobs - mini_batch_logprobs.detach())
-
-                surr1 = ratios * mini_batch_advantages
-                surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * mini_batch_advantages
-                state_values = state_values.squeeze(-1)
-
-                # Final loss of clipped objective PPO
-                loss = (-torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, mini_batch_rewards) -
-                        0.01 * dist_entropy)
-                # 梯度优化过程
-                self.optimizer.zero_grad()
-                loss.mean().backward()
-                self.optimizer.step()
+            # 梯度优化过程
+            self.optimizer.zero_grad()
+            loss.mean().backward()
+            self.optimizer.step()
 
         # Copy new weights into old policy
+        # 保存新的网络数据到policy_old
         self.policy_old.load_state_dict(self.policy.state_dict())
 
-        # Clear buffer
+        # clear buffer
         self.buffer.clear()
 
     def save(self, checkpoint_path):
@@ -536,7 +457,7 @@ class Classic_PPO:
         }
         torch.save(checkpoint, filename)
 
-    def load_full(self, filename, _init_std=None):
+    def load_full(self, filename):
         # 将网络数据和优化器数据都加载出来
         print("=> Loading checkpoint")
         checkpoint = torch.load(filename, weights_only=False)

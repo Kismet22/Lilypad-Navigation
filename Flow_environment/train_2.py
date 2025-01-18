@@ -1,8 +1,6 @@
 import gym
-# import my_ppo_net
-# from my_ppo_net import Classic_PPO
-import my_ppo_net_1
-from my_ppo_net_1 import Classic_PPO
+import my_ppo_net
+from my_ppo_net import Classic_PPO
 import os
 import argparse
 import torch
@@ -10,12 +8,13 @@ import numpy as np
 from datetime import datetime
 from termcolor import colored
 import time
-# from env import flow_field_env_2
-from env import flow_field_env_1
+from env import flow_field_env_3
+from multiprocessing import Process, set_start_method
 
 # 将设备设置与hjbppo.py中相同
-device = my_ppo_net_1.device
-
+device = my_ppo_net.device
+ppo_path = './models/PPO_a2.pth' # 20241227训练模型
+# 底层网络训练测试
 
 def train(model_id, render_mode=None, checkpoint_path=None):
     print("============================================================================================")
@@ -32,32 +31,33 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     # max time_steps in one episode
     # TODO:探索步数可调整
     # max_steps = 4000
-    max_steps = 200
+    max_steps = 150
     max_ep_len = max_steps + 20
 
     # 结束训练的总训练步数
     # break training loop if timesteps > max_training_timesteps
-    max_training_timesteps = int(2e5)
+    max_training_timesteps = int(1e6)
 
     # 打印/保存episode奖励均值
     # Note : print/log frequencies should be more than max_ep_len
     # print avg reward in the interval (in num timesteps)
-    print_freq = max_ep_len * 3
+    print_freq = max_ep_len * 5
     # log avg reward in the interval (in num timesteps)
-    log_freq = max_ep_len * 3
+    log_freq = max_ep_len * 5
+    log_freq_2 = 50
 
     # 存储模型间隔
     # save model frequency (in num timesteps)
     # save_model_freq = int(4e4)
-    save_model_freq = int(1e4)
+    save_model_freq = int(2e3)
 
     # 注意，这里的标准差信息都是针对网络直接输出而言，即最终网络激活函数的归一化输出[-1, 1]作为均值的方差
     # 初始方差
     action_std = 0.8  # starting std for action distribution (Multivariate Normal)
     # 方差更新缩减值
-    action_std_decay_rate = 0.05  # linearly decay action_std (action_std = action_std - action_std_decay_rate)
+    action_std_decay_rate = 0.1  # linearly decay action_std (action_std = action_std - action_std_decay_rate)
     # 最小方差
-    min_action_std = 0.005  # minimum action_std (stop decay after action_std <= min_action_std)
+    min_action_std = 0.05  # minimum action_std (stop decay after action_std <= min_action_std)
     # 方差缩减频率
     action_std_decay_freq = int(1e4)  # action_std decay frequency (in num timesteps)
     #####################################################
@@ -65,7 +65,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     ################ 强化学习超参数设置 ################
     # 网络更新频率
     # update policy every n timesteps
-    update_timestep = max_ep_len * 5
+    update_timestep = max_ep_len * 15
     # update policy for K epochs in one PPO update
     K_epochs = 40
 
@@ -85,15 +85,9 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     parser_1 = argparse.ArgumentParser()
     args_1, unknown = parser_1.parse_known_args()
     args_1.action_interval = 10
-
-    # start = np.array([float(240), float(64)])
-    # target = np.array([float(190), float(64)])
-    # env = flow_field_env_1.foil_env(args_1, max_step=max_steps, target_position=target)
-
-    # env = flow_field_env_1.foil_env(args_1, max_step=max_steps)
-
-    center = np.array([float(190), float(64)])
-    env = flow_field_env_1.foil_env(args_1, max_step=max_steps, target_center=center)
+    start = np.array([float(150), float(64)])
+    target = np.array([float(64), float(64)])
+    env = flow_field_env_3.foil_env(args_1, max_step=max_steps, target_position=target, start_position=start)
 
     # 状态空间
     # state space dimension
@@ -134,6 +128,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     rl_method = '/PPO'
     ######################
     log_f_name = log_dir + rl_method + env_name + "_log_" + str(pretrained_model_ID) + ".csv"
+    log_f_name_2 = log_dir + rl_method + env_name + "_reward_" + str(pretrained_model_ID) + ".csv"
 
     print("current logging model ID for " + env_name + " : ", pretrained_model_ID)
     print("logging at : " + log_f_name)
@@ -158,6 +153,30 @@ def train(model_id, render_mode=None, checkpoint_path=None):
         try:
             with open(log_f_name, "w+") as log_f:
                 log_f.write('episode,timestep,avg_return_in_period,action_std\n')
+                print("表头写入成功")
+        except Exception as e:
+            print(f"写入文件失败: {e}")
+    log_f.close()
+
+    if os.path.exists(log_f_name_2):
+        print(f"Warning: Reward file for model ID {pretrained_model_ID} already exists. Appending new data.")
+        # 读取文件最后一行并打印
+        try:
+            with open(log_f_name_2, "r") as log_f:
+                lines = log_f.readlines()  # 读取所有行
+                if lines:
+                    last_line = lines[-1]  # 获取最后一行
+                    print("文件的最后一行内容是:")
+                    print(last_line)
+                else:
+                    print("日志文件为空，无法读取最后一行。")
+        except Exception as e:
+            print(f"读取文件失败: {e}")
+    else:
+        # 如果文件不存在，创建新文件并写入表头
+        try:
+            with open(log_f_name_2, "w+") as log_f:
+                log_f.write('timestep,a_r,w_r,punish\n')
                 print("表头写入成功")
         except Exception as e:
             print(f"写入文件失败: {e}")
@@ -224,14 +243,10 @@ def train(model_id, render_mode=None, checkpoint_path=None):
 
     ################# training procedure ################
     # initialize RL agent
-    # ppo_agent = Classic_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-    #                         has_continuous_action_space,
-    #                         action_std, continuous_action_output_scale=action_output_scale,
-    #                         continuous_action_output_bias=action_output_bias, mini_batch_size=32)
     ppo_agent = Classic_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
                             has_continuous_action_space,
                             action_std, continuous_action_output_scale=action_output_scale,
-                            continuous_action_output_bias=action_output_bias)
+                            continuous_action_output_bias=action_output_bias, mini_batch_size=32)
 
     # 加载 checkpoint 如果提供了路径
     if checkpoint_path:
@@ -289,6 +304,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     
     # write training data
     log_f = open(log_f_name, "a")
+    log_f_2 = open(log_f_name_2, "a")
     # track total training time
     start_time = datetime.now().replace(microsecond=0)
     print("Started training at (GMT) : ", start_time)
@@ -307,6 +323,9 @@ def train(model_id, render_mode=None, checkpoint_path=None):
             action = ppo_agent.select_action(state)
 
             state, reward, terminated, truncated, info = env.step(action)
+            angle_reward = env.angle_reward
+            vel_angle_reward = env.vel_angle_reward
+            roll_punish = env.roll_punish
             # time.sleep(1)
 
             done = terminated or truncated
@@ -352,7 +371,11 @@ def train(model_id, render_mode=None, checkpoint_path=None):
                 log_running_return = 0
                 log_running_episodes = 0
 
-            # printing average reward
+            # 记录奖励值，便于后续调参时使用
+            # if time_step % log_freq_2 == 0:
+            #     log_f_2.write('{},{},{},{}\n'.format(time_step, angle_reward, vel_angle_reward, roll_punish))
+            #     log_f_2.flush()
+
             if time_step % print_freq == 0:
                 # print average reward till last episode
                 print_avg_return = print_running_return / print_running_episodes
@@ -407,54 +430,44 @@ def train(model_id, render_mode=None, checkpoint_path=None):
 
 
 if __name__ == '__main__':
-    # 创建一个命令行接口，通过命令行传递参数来控制训练过程的开始 ID、训练次数以及是否使用 GPU
-    """
-    (conda Env: pytorch310)python ./train_test.py start_id train_times
-    """
-    # 创建 ArgumentParser 对象
-    parser = argparse.ArgumentParser(description="Train PPO with optional arguments")
-    # 添加位置参数
+    # 设置启动方法为 spawn
+    set_start_method('spawn', force=True)
+    # 命令行解析
+    parser = argparse.ArgumentParser(description="Train PPO in parallel")
     parser.add_argument('start_id', type=int, help='Starting ID for training')
     parser.add_argument('train_times', type=int, help='Number of training times')
-    # 添加可选的 --force-cpu 标志
-    # parser.add_argument('--use-gpu', action='store_true', help='Use GPU if CUDA is available')
-    # 添加可选的 --checkpoint-path 参数，用于传递模型检查点文件夹路径
     parser.add_argument('--checkpoint-path', type=str, default=None, help='Path to checkpoint folder')
-
-    # 解析命令行参数
     args = parser.parse_args()
 
-    # 从 args 中获取参数
     start_id = args.start_id
     train_times = args.train_times
-    checkpoint_path = args.checkpoint_path  # 获取 checkpoint 路径
+    checkpoint_path = args.checkpoint_path
 
-    total_delay = 1  # 总延迟时间（s）
-    interval = total_delay if total_delay < 10 else 10  # 每10秒打印一次信息
-
+    total_delay = 1
+    interval = total_delay if total_delay < 10 else 10
     for remaining in range(total_delay, 0, -interval):
         print(f"程序将在 {remaining} 秒后开始...")
-        time.sleep(interval)  # 等待10秒
+        time.sleep(interval)
 
     print("开始执行程序...")
 
     start_time = datetime.now().replace(microsecond=0)
-    for i in range(start_id, start_id + train_times):
-        print(f'======================== Training ID = {i} ========================')
-        train(i, checkpoint_path=checkpoint_path)
-        # if i:
-        #     train(i)
-        # else:
-        #     train(i, checkpoint_path=checkpoint_path)
 
-    print(
-        colored("============================================================================================", 'red'))
-    print(colored(f"Training_TEST for {train_times} times Ended.", 'red'))
+    # 使用 multiprocessing 启动多个进程
+    processes = []  # 存储所有进程
+    for i in range(start_id, start_id + train_times):
+        p = Process(target=train, args=(i, checkpoint_path))  # 创建一个进程
+        p.start()  # 启动进程
+        processes.append(p)  # 将进程加入列表
+
+    # 等待所有进程完成
+    for p in processes:
+        p.join()
+
     end_time = datetime.now().replace(microsecond=0)
+    print(colored("============================================================================================", 'red'))
+    print(colored(f"Parallel Training for {train_times} times Ended.", 'red'))
     print(colored(f"Started training_test at (GMT) : {start_time}", 'red'))
     print(colored(f"Finished training_test at (GMT) : {end_time}", 'red'))
     print(colored(f"Total training_test time  : {end_time - start_time}", 'red'))
-    print(
-        colored(f"============================================================================================", 'red'))
-
-    pass
+    print(colored("============================================================================================", 'red'))
