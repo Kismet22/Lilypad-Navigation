@@ -20,7 +20,7 @@ def is_port_in_use(port: int) -> bool:
         return s.connect_ex(('localhost', port)) == 0
 
 class foil_env:
-    def __init__(self, config=None, info='', local_port=None, network_port=None, target_center=None, target_position=None, start_position=None, max_step=None, include_flow=False):
+    def __init__(self, config=None, info='', local_port=None, network_port=None, target_position=None, start_position=None, max_step=None, include_flow=False):
         # n = 20 * 16  m = 8 * 16 r = 3 * 16 每个圆柱的半径是1*16
         # m 和 n 对应模拟窗格的大小
         # 实际的位移大小应该是Δx/16
@@ -35,19 +35,16 @@ class foil_env:
         # 智能体椭圆信息
         self.ellipse_b = self.body_r/4 # 竖直摆放的椭圆 b = 1.5a
         self.ellipse_a = self.ellipse_b / 1.5
-        # self.circles = [
-        #     {"center": (self.n/6, self.m/2 + self.r/2), "radius": self.body_r/2},
-        #     {"center": (self.n/6, self.m/2 - self.r/2), "radius": self.body_r/2},
-        #     {"center": (self.n/6 + self.r*cos(pi/6), self.m/2), "radius": self.body_r/2}
-        # ]
         self.circles = [
             {"center": (53, 32), "radius": self.body_r/2},
             {"center": (53, 96), "radius": self.body_r/2},
             {"center": (109, 64), "radius": self.body_r/2}
         ]
-        self.observation_dim = 14
+        # self.observation_dim = 14
+        self.observation_dim = 12
         self.action_dim = 3
         self.step_counter = 0
+        self.success_counter = 0
         self.steps_default = 300
         if max_step:
             self.t_step_max = max_step
@@ -56,10 +53,10 @@ class foil_env:
         self.state = np.zeros(self.observation_dim)
         # TODO:change action range
         # 参考:[15, 15, 10]
-        # low = np.array([-20.0, -20, -10], dtype=np.float32)  # 每个维度的下界
-        # high = np.array([20.0, 20, 10], dtype=np.float32)  # 每个维度的上界
-        low = np.array([-20.0, -20, -10], dtype=np.float32)  # 每个维度的下界
-        high = np.array([20.0, 20, 10], dtype=np.float32)  # 每个维度的上界
+        # low = np.array([-15.0, -15, -10], dtype=np.float32)  # 每个维度的下界
+        # high = np.array([15.0, 15, 10], dtype=np.float32)  # 每个维度的上界
+        low = np.array([-20, -0.00001, -10], dtype=np.float32)  # 每个维度的下界
+        high = np.array([20, 0.00001, 10], dtype=np.float32)  # 每个维度的上界
         self.low = low
         self.high = high
         self.agent_pos = np.array([0.0, 0.0])
@@ -75,9 +72,6 @@ class foil_env:
         # 起终点位置选取
         ##############################################################
         self.target_default = np.array([self.n/6 + self.r*cos(pi/6)/2, self.m/2])
-        if target_center is not None:
-            self.target_default = target_center
-        # [240, 64]
         self.start_default = np.array([6*self.n/8, self.m/2])
         self.target_position = self.target_default
         self.start_position = self.start_default
@@ -100,22 +94,28 @@ class foil_env:
             self._is_fixed_start = False
         ##############################################################
 
-        # TODO:考虑加入角度信息
-        # self._previous_angle = 0
-        self.angle = 0
-        self.vel_angle = 0
-        
+        # TODO:目标速度和角度
+        self.tvx = 0
+        self.tvy = 0
+        self.tva = 0
+        self.target_vx_range = [-2, 2]
+        self.target_vy_range = [-2, 2]
+        self.target_angle_range = [-pi/4, pi/4]      
         self.reward = 0
-        self.done = False
         self.d_2_target = 0
-        # 速度相关记录
+        self.a_2_target = 0
+        self.angle = 0
         self.u_flow = []
         self.v_flow = []
         self.speed = 0
         self.flow_speed = 0
         self.include_flow = include_flow
-        self._roll_count = 0
-        self._roll_punish = -20
+
+        # TODO:几个奖励的值的大小，用于测量和调整对应的系数k
+        self.time_reward = 0
+        self.angle_reward = 0
+        self.vel_angle_reward = 0
+        self.roll_punish = 0
 
         # 绘图
         self.frame_pause = 0.03 # 渲染间隔时间
@@ -149,26 +149,30 @@ class foil_env:
         return atan2(sin(angle), cos(angle))
 
     def step(self, action):
+        # 低层网络测试
         # 动作裁剪
-        action = self.clip_action(action)
+        # action = self.clip_action(action)
         _truncated = False
         _terminated = False
         _reward = 0
         state_1 = self.state
         self.step_counter += 1
-        pos_cur = self.agent_pos
-        step_1 = float(action[0])  # x 加速度
-        step_2 = float(action[1])  # y 加速度
-        step_3 = float(action[2])  # 旋转加速度
+        target_vel_x = self.tvx
+        target_vel_y = self.tvy
+        target_angle = self.tva
+
+        # 当前动作分解
+        # step_1 = float(action[0])  # x 加速度
+        # step_2 = float(action[1])  # y 加速度
+        step_1 = float(action[0])  # 强制为0
+        print("a_x", step_1)
+        step_2 = float(0)  # 强制为0
+        step_3 = float(action[2])  # 角加速度
         action_json = {"v1": step_1, "v2": step_2, "v3": step_3}
-        action_json_0 = {"v1": 0, "v2": 0, "v3": 0}
+
+        # 环境步进
         for i in range(self.action_interval):  # 10步
             res_str = self.proxy.connect.Step(json.dumps(action_json))
-            # if i:
-            #     res_str = self.proxy.connect.Step(json.dumps(action_json_0))
-            # else:
-            #     # 执行一步
-            #     res_str = self.proxy.connect.Step(json.dumps(action_json))
             if self.include_flow:
                 step_state, vflow_x, vflow_y = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
                 # 展示时返回流场内容，训练时不返回
@@ -176,7 +180,7 @@ class foil_env:
                 v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
             else:
                 step_state = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
-            state_1 = np.array(step_state, dtype=np.float32)  # 将状态转换为 NumPy 数组
+            state_1 = np.array(step_state, dtype=np.float32)
         # step:info
         _info = {"vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
                  "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
@@ -184,86 +188,101 @@ class foil_env:
                  "pressure_4": state_1[9], "pressure_5": state_1[10], "pressure_6": state_1[11],
                  "pressure_7": state_1[12], "pressure_8": state_1[13]}
         
-        # step agent position
+        # 更新状态
         self.agent_pos = [state_1[3], state_1[4]]
-        self.agent_pos_history.append(self.agent_pos)
-        new_pos = self.agent_pos
-        d = np.linalg.norm(self.agent_pos - self.target_position)
-        # TODO:状态变量值量纲的处理
-        # state_1[0], state_1[1], state_1[2] = state_1[0]*16, state_1[1]*16, state_1[2]*16 # 速度状态值×16，与位置网格统一
-        # state_1[5] = self.normalize_angle(state_1[5])
-        # state_1[2], state_1[5] = np.degrees(state_1[2]), np.degrees(state_1[5])
-        self.angle = state_1[5]
-        self.vel_angle = abs(state_1[2]) # [1e-2, 1e-1]
-        state_1[3], state_1[4] = self.target_position[0] - state_1[3], self.target_position[1] - state_1[4]
-        self.state = state_1
 
-        # step reward
-        # 检查出界
+        self.agent_pos_history.append(self.agent_pos)
+        self.angle = state_1[5]
+        state_1[3], state_1[4] = self.target_position[0] - state_1[3], self.target_position[1] - state_1[4]
+        delta_angle = self.normalize_angle(target_angle - state_1[5])
+        state_2 = np.concatenate((state_1[:3], [delta_angle], state_1[6:]))
+        self.state = state_2
+
+        # # 奖励函数计算
+        # current_vel_x, current_vel_y, current_angle = state_1[0], state_1[1], state_1[5]
+        # current_accel = np.linalg.norm([step_1, step_2]) # [15, 15]
+        # current_accel_normalized = current_accel/np.linalg.norm([15, 15]) # [15, 15]
+        # current_angular_accel = abs(step_3) # 10
+        # current_angular_accel_normalized = current_angular_accel/10
+
+        # # 理想速度和角度的偏差
+        # vel_x_error = abs(target_vel_x - current_vel_x)
+        # vel_y_error = abs(target_vel_y - current_vel_y)
+
+        current_angle = state_1[5]
+        self.roll_punish = 0
+        _roll_punish = 0
+        if abs(current_angle) > 2*pi:
+            _roll_punish = 10 * (abs(current_angle)-2*pi) # 旋转超过一圈的惩罚
+            self.roll_punish = _roll_punish
+
+        # TODO:上一次的角度误差
+        old_a_2_target = self.a_2_target
+        angle_error = abs(target_angle-current_angle)
+        # TODO：这一次的角度误差
+        self.a_2_target = angle_error
+        # TODO:获取本次角速度
+        vel_angle = abs(state_1[2])
+
+        # 检查是否达到目标速度和角度
+        # vel_threshold = 0.1  # 速度误差阈值
+        angle_threshold = 0.01  # 角度误差阈值
+        success_threshold = 10  # 目标保持成功计数阈值
+        vel_angle_threshold = 1e-2 # 角速度误差阈值
+
+        # TODO:保证时间惩罚和距离奖励在同一个量级
+        kt = 10 # dt = 0.075 150 * 0.75 = 112.5
+        ka_1 = 200 # [1e-2, 1e-1] pi/4 * 200 = 157
+        kv_1 = 1 # [1e-2, 1e-1],真实的速度量级应该再乘一个16
+        ka_2 = 100
+        kv_2 = 10
+        self.time_reward = self.dt
+        self.angle_reward = (old_a_2_target - self.a_2_target)
+        self.vel_angle_reward = vel_angle
+
         if self.is_out_of_bounds():
             _truncated = True
-            # TODO:出界损失的选择
-            # _reward = -200
-            _reward = -0
-            print(colored("**** Episode Finished **** Hit Boundary.", 'red'))
+            _reward = 0  # 边界惩罚
+            print(colored(f"**** Episode Finished At Step {self.step_counter} **** Hit Boundary.", 'red'))
+        elif self.step_counter >= self.t_step_max:
+            _truncated = True
+            _reward = 0  # 时间限制惩罚
+            print(colored("**** Episode Finished **** Reaches Env Time limit.", 'blue'))
         else:
-            # 1 检查撞圆柱
-            if self.is_in_circle(self.circles):
-                 # TODO:撞圆柱时不停止，让智能体继续运动收集信息，但每一步都给一个负的奖励
-                # _truncated = True
-                # _reward = -1200
-                # print(colored("**** Episode Finished **** Hit Circles.", 'red'))
-                _reward = -10 * (d - self.d_2_target) - 50
-                print(colored("**** Forbidden Move **** Hit Circles.", 'yellow'))
-        
-            # 2 检查超时
-            elif self.step_counter >= self.t_step_max or self.done:
-                _truncated = True
-                # TODO:超时损失的选择
-                _reward = -0
-                print(colored("**** Episode Finished **** Reaches Env Time limit.", 'blue'))
-            
-            # # 3 检查旋转超过一圈
-            # elif abs(self.angle) > 2*pi:
-            #     _truncated = True
-            #     # TODO:超时损失的选择
-            #     _reward = -200
-            #     print(colored("**** Episode Finished **** Over Roll.", 'blue'))
-            
-            # 4 正常情况
-            else:
-                # 检查终点
-                if self.is_reach_target():
+            if angle_error < angle_threshold and vel_angle < vel_angle_threshold:
+                self.success_counter += 1
+                if self.success_counter >= 10:
+                    # 达到目标并保持稳定
                     _terminated = True
-                    _reward = 500
-                    print(colored("**** Episode Finished **** SUCCESS.", 'green'))
-                # 运行途中
+                    _reward = 200
+                    print(colored(f"**** Reach Target **** SUCCESS.", 'green'))
                 else:
-                    # 计算当前圈数（可正可负）
-                    current_roll_count = self.angle / (2 * pi)
-                    # 检测整圈变化
-                    full_turns = int(current_roll_count) - int(self._roll_count)
-                    # 奖励计算
-                    # _reward = -10 * self.dt -10 * (d - self.d_2_target)
-                    _reward = -10 * (d - self.d_2_target)
-                    # 如果整圈发生变化
-                    if full_turns != 0:
-                        print(colored(f"**** Over Roll:{int(self._roll_count)} to {int(current_roll_count)} ****", 'blue'))
-                        _reward += abs(full_turns) * self._roll_punish  # 加入旋转惩罚
-                    # 更新历史圈数
-                    self._roll_count = current_roll_count
-        
-        # 环境记录以及更新
-        self.d_2_target = d
+                    _reward = - kt * self.dt + ka_1 * (old_a_2_target - self.a_2_target) - kv_1 * vel_angle - _roll_punish
+                    print(colored(f"**** Near Target and Speed At Step {self.step_counter} **** Keeping.", 'yellow'))
+            elif angle_error < angle_threshold:
+                self.success_counter = 0
+                # 接近目标角度但角速度不稳定
+                # _reward = 10 + ka_2 * self.angle_reward - kv_2 * self.vel_angle_reward
+                _reward = - kt * self.dt + ka_1 * (old_a_2_target - self.a_2_target) - kv_1 * vel_angle - _roll_punish
+                print(colored(f"**** Near Target At Step {self.step_counter} **** Adjusting Velocity.", 'yellow'))
+            else:
+                self.success_counter = 0
+                # 未达到目标角度
+                # 角度误差用两次的差值
+                _reward = - kt * self.dt + ka_1 * (old_a_2_target - self.a_2_target) - kv_1 * vel_angle - _roll_punish
+                # print(colored(f"****dt:{self.dt} angle_loss:{old_a_2_target - self.a_2_target} vel_angle:{vel_angle} ****", 'blue'))
+
+        # 环境记录更新
         self.reward = _reward
         if self.include_flow:
             self.u_flow = v_x
             self.v_flow = v_y
             self.speed = sqrt(state_1[0]**2 + state_1[1]**2)
             self.flow_speed = sqrt(v_x[int(self.agent_pos[0])][int(self.agent_pos[1])]**2 +v_y[int(self.agent_pos[0])][int(self.agent_pos[1])]**2)
+            print(f"Agent_Angle{self.angle}")
             self._render_frame(_save=_terminated)
-
         return self.state, self.reward, _terminated, _truncated, _info
+
 
 
     @staticmethod
@@ -273,49 +292,61 @@ class foil_env:
         return origin + np.array([d * cos(theta), d * sin(theta)])
 
     def reset(self):
-        self._roll_count = 0
-        # TODO:目前的随机其实是固定
-        if not self._is_fixed_target:
-            print("随机选择目标终点")
-            self.target_position = self._rand_in_circle(self.target_default, self.body_r/2)
-            # self.target_position = self.target_default
-        print("target_pos:", self.target_position)
-        if not self._is_fixed_start:
-            print("随机选择目标起点")
-            # self.start_position = self._rand_in_circle(self.start_default, self.body_r/2)
-            self.start_position = self.start_default
+        self.success_counter = 0
         print("start_pos:", self.start_position)
-        self.step_counter=0
-        # reset true environment
-        # action_json = {"v1": 0, "v2": 0, "v3": 0}
+
+        self.tvx = np.random.uniform(self.target_vx_range[0], self.target_vx_range[1])
+        self.tvy = np.random.uniform(self.target_vy_range[0], self.target_vy_range[1])
+        # self.tva = np.random.uniform(self.target_angle_range[0], self.target_angle_range[1])
+
+        self.tva = 0
+        target_angle = self.tva
+
+        # print(f"目标速度：x{self.tvx},y{self.tvy}")
+        print(f"目标角度：{np.degrees(self.tva)}")
+
+        self.step_counter = 0
+
+        # 初始化智能体位置并重置环境
         agent_init_x = self.start_position[0]
         agent_init_y = self.start_position[1]
-        action_json = {"v1": 0, "v2": 0, "v3": 0, "init_x": agent_init_x, "init_y": agent_init_y} # 传入一个坐标信息给Sever
+        action_json = {"v1": 0, "v2": 0, "v3": 0, "init_x": agent_init_x, "init_y": agent_init_y}  # 包含坐标信息
         res_str = self.proxy.connect.reset(json.dumps(action_json))  # 调用 reset 获取新状态
+
+        # 解析返回的环境状态
         if self.include_flow:
-            step_state, vflow_x, vflow_y = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
-            # 展示时返回流场内容，训练时不返回
-            v_x = np.array(vflow_x, dtype=np.float32)  # 将状态转换为 NumPy 数组
-            v_y = np.array(vflow_y, dtype=np.float32)  # 将状态转换为 NumPy 数组
+            step_state, vflow_x, vflow_y = self.parseStep(res_str, self.include_flow)  # 解析流场状态
+            v_x = np.array(vflow_x, dtype=np.float32)
+            v_y = np.array(vflow_y, dtype=np.float32)
         else:
-            step_state = self.parseStep(res_str, self.include_flow)  # 解析返回的状态
-        state_1 = np.array(step_state, dtype=np.float32)  # 将状态转换为 NumPy 数组
-        _info = {"vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
-                 "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
-                 "pressure_1": state_1[6], "pressure_2": state_1[7], "pressure_3": state_1[8],
-                 "pressure_4": state_1[9], "pressure_5": state_1[10], "pressure_6": state_1[11],
-                 "pressure_7": state_1[12], "pressure_8": state_1[13]}
-        # step agent position
-        self.angle = state_1[5]
+            step_state = self.parseStep(res_str, self.include_flow)
+
+        state_1 = np.array(step_state, dtype=np.float32)  # 转换为 NumPy 数组
+
+        # 提取关键信息
+        _info = {
+            "vel_x": state_1[0], "vel_y": state_1[1], "vel_angle": state_1[2],
+            "pos_x": state_1[3], "pos_y": state_1[4], "angle": state_1[5],
+            "pressure_1": state_1[6], "pressure_2": state_1[7], "pressure_3": state_1[8],
+            "pressure_4": state_1[9], "pressure_5": state_1[10], "pressure_6": state_1[11],
+            "pressure_7": state_1[12], "pressure_8": state_1[13]
+        }
+
+        # 更新智能体位置和与目标点的距离
         self.agent_pos = [state_1[3], state_1[4]]
-        d = np.linalg.norm(self.agent_pos - self.target_position)
-        self.d_2_target = d
-        # TODO:状态变量值量纲的处理
-        # state_1[0], state_1[1], state_1[2] = state_1[0]*16, state_1[1]*16, state_1[2]*16
-        # state_1[5] = self.normalize_angle(state_1[5])
-        # state_1[2], state_1[5] = np.degrees(state_1[2]), np.degrees(state_1[5])
+        self.d_2_target = np.linalg.norm(self.agent_pos - self.target_position)
+
+        # 更新相对目标点的位置
+        self.agent_pos_history.append(self.agent_pos)
+        self.angle = state_1[5]
         state_1[3], state_1[4] = self.target_position[0] - state_1[3], self.target_position[1] - state_1[4]
-        self.state = state_1
+        delta_angle = target_angle - state_1[5]
+        # TODO:角度差值
+        self.a_2_target = abs(delta_angle)
+        state_2 = np.concatenate((state_1[:3], [delta_angle], state_1[6:]))
+        self.state = state_2
+
+        # 流场信息处理
         if self.include_flow:
             self.u_flow = v_x
             self.v_flow = v_y
@@ -324,7 +355,9 @@ class foil_env:
             self._render_frame()
 
         return self.state, _info
-    
+
+
+
     def clip_action(self, action):
         # 使用 np.clip 裁剪动作，确保动作值在给定的范围内
         action = np.clip(action, self.low, self.high)
