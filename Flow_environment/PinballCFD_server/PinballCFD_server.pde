@@ -73,23 +73,6 @@ void settings()
 
 }
 
-// 旧的启动方式，不包含流场数据符号
-/*void setup()
-{
-
-  try
-  {
-    server = StartServer(int(args[0])); //端口号
-  }
-  
-  catch (Exception ex)
-  {
-    println(ex);
-  }
-  setUpNewSim(EpisodeNum);
-}*/
-
-
 void setup() {
     try {
         if (args != null && args.length > 1) {
@@ -103,7 +86,8 @@ void setup() {
     } catch (Exception ex) {
         println("Error starting server: " + ex);
     }
-    setUpNewSim(EpisodeNum); // 初始化仿真
+     // 初始化仿真
+    // setUpNewSim(EpisodeNum);
 }
 
 void draw() {
@@ -162,42 +146,8 @@ float[] callActionByRemote()
 }
 
 
-// Lilypad回传奖励函数，不需要
-/*void reward(float COST)
-{
-  float target_reward = COST;
-  if ((test.t +0.12) > EpisodeTime){
-    done = true;
-    dat.finish(); 
-    simNum = simNum + 1;
-    setUpNewSim(simNum);
-  }
- 
-  println("time:" + test.t);
-  //done = false;
-  // TODO: !!! update reward , done and state in buffer
-  reward_buffer = target_reward;
-  //release state semaphore to let server return the resulted state
-  state_sem.release();
-}*/
-
-
-
-// 旧的启动方式，不包含流场数据符号
-/*WebServer StartServer(int port)
-{
-  println(port);
-  WebServer server = new WebServer(port);
-  server.addHandler("connect", new serverHandler());
-  server.start();
-
-  System.out.println("Started server successfully.");
-  System.out.println("Accepting requests. (Halt program to stop.)");
-  return server;
-}*/
-
-
 WebServer StartServer(int port, boolean includeFlow) {
+  // 启动仿真器
     println(port);
     WebServer server = new WebServer(port);
     server.addHandler("connect", new serverHandler(includeFlow));
@@ -211,9 +161,9 @@ WebServer StartServer(int port, boolean includeFlow) {
 
 // server handler to provide api
 public class serverHandler {
-    
     // 成员变量存储 includeFlow 标志
     private boolean includeFlow; 
+    // TODO:成员变量存储随机起点标志
 
     // 构造函数,启用一个新的serverHandler类时包含流场标识
     public serverHandler(boolean includeFlow) {
@@ -248,9 +198,6 @@ public class serverHandler {
             output_object.put("flow_u", flowVelocityX);
             output_object.put("flow_v", flowVelocityY);
         }
-        //output_object.put("flow_u", flowVelocityX);
-        //output_object.put("flow_v", flowVelocityY);
-
         return output_object.toJSONString();
     }
 
@@ -263,12 +210,11 @@ public class serverHandler {
             output_object.put("flow_u", flowVelocityX);
             output_object.put("flow_v", flowVelocityY);
         }
-        //output_object.put("flow_u", flowVelocityX);
-        //output_object.put("flow_v", flowVelocityY);
         return output_object.toJSONString();
     }
 
     public String reset(String actionInJson) {
+        
         JSONObject input_object = JSONObject.parseObject(actionInJson);
         JSONObject output_object = new JSONObject();
 
@@ -276,9 +222,12 @@ public class serverHandler {
         action[0] = input_object.getFloat("v1");
         action[1] = input_object.getFloat("v2");
         action[2] = input_object.getFloat("v3");
+        // 获取智能体的初始化坐标
+        float init_x = input_object.getFloat("init_x");
+        float init_y = input_object.getFloat("init_y");
 
         println("Reset_simNum " + simNum);
-        setUpNewSim(simNum);
+        setUpNewSim(simNum, init_x, init_y);
         simNum += 1;// 每次 reset 仿真编号递增
 
         // 释放动作信号量
@@ -299,8 +248,6 @@ public class serverHandler {
             output_object.put("flow_u", flowVelocityX);
             output_object.put("flow_v", flowVelocityY);
         }
-        //output_object.put("flow_u", flowVelocityX);
-        //output_object.put("flow_v", flowVelocityY);
         println("complete reset");
         return output_object.toJSONString();
     }
@@ -327,43 +274,31 @@ public String multy_state(PVector pos, PVector vel, ArrayList<Float> surfacePres
 }
 
 
-/*public String flowFieldToJson(VectorField flowVelocity) {
-    JSONObject flowField = new JSONObject();
-    JSONArray xField = new JSONArray();
-    JSONArray yField = new JSONArray();
-
-    for (int i = 0; i < flowVelocity.x.a.length; i++) {
-        JSONArray xRow = new JSONArray();
-        JSONArray yRow = new JSONArray();
-        for (int j = 0; j < flowVelocity.x.a[i].length; j++) {
-            xRow.add(flowVelocity.x.a[i][j]);
-            yRow.add(flowVelocity.y.a[i][j]);
-        }
-        xField.add(xRow);
-        yField.add(yRow);
-    }
-
-    flowField.put("x", xField);
-    flowField.put("y", yField);
-    return flowField.toJSONString();
-}*/
-
-
-
-void setUpNewSim(int runNum){       
-  int xLengths = 20, yLengths = 8, zoom = 100/resolution, Re = 500;    
+void setUpNewSim(int runNum, float init_pos_x, float init_pos_y) {       
+  int xLengths = 20, yLengths = 8, zoom = 100 / resolution, Re = 500;    
   float gR = 3;        
-  float xi0 = 0, xi1 = 0, xi2 = 0, theta = PI/6;  
-  
+  float xi0 = 0, xi1 = 0, xi2 = 0, theta = PI / 6;  
+
   smooth();
-  
-  if (zoom <= 1){zoom = 1;}
-  
-  test = new Pinball(resolution, Re, gR, theta, xi0, xi1, xi2, tStep, xLengths, yLengths, false);          
-  dat = new SaveScalar("saved/"+str(runNum)+".txt", (float)resolution, (float)xLengths, (float)yLengths, 32);      
-  
+
+  if (zoom <= 1) { zoom = 1; }
+
+  // 创建一个新的模拟，传入坐标
+  // Pinball声明为false时，环境初始化为稳定来流状态
+  test = new Pinball(resolution, Re, gR, theta, xi0, xi1, xi2, tStep, xLengths, yLengths, false, init_pos_x, init_pos_y);
+  // Pinball声明为true时，环境初始化为混乱来流状态
+  // test = new Pinball(resolution, Re, gR, theta, xi0, xi1, xi2, tStep, xLengths, yLengths, true, init_pos_x, init_pos_y);
+
+  dat = new SaveScalar("saved/" + str(runNum) + ".txt", (float) resolution, (float) xLengths, (float) yLengths, 32);
+
   new File(datapath + str(runNum)).mkdir();
-  nextactionA=0;
-  nextactionB=0;
-  nextactionC=0;
+  nextactionA = 0;
+  nextactionB = 0;
+  nextactionC = 0;
+}
+
+// 为了兼容默认坐标的情况，增加一个重载函数
+void setUpNewSim(int runNum) {       
+  // 如果没有传入坐标，则使用默认的坐标值
+  setUpNewSim(runNum, 0.0f, 0.0f);
 }

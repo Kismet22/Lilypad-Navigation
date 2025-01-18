@@ -5,14 +5,27 @@ class Pinball {
   int n, m, out, up, resolution,NT=1;
   float dt, t, D, xi0, xi1, xi2,theta;
   float xi0_m, xi1_m, xi2_m, gR, theta_m, r, dphi0, dphi1, dphi2;
+  float pos_x_default, pos_y_default;
   FloodPlot flood;
   PVector force, force_0, force_1, force_2;
   PVector vel, pos;
   ArrayList<Float> surfacePressures;
 
-  Pinball (int resolution, int Re,  float gR,  float theta,  float xi0,  float xi1,  float xi2, float dtReal, int xLengths, int yLengths, boolean isResume) {
+  Pinball (int resolution, int Re,  float gR,  float theta,  float xi0,  float xi1,  float xi2, float dtReal, int xLengths, int yLengths, boolean isResume, float _pos_x, float _pos_y) {
+    // resolution:理解成缩放倍数
+    // resolution取16
     n = xLengths*resolution;
     m = yLengths*resolution;
+    if (_pos_x != 0.0f || _pos_y != 0.0f) {
+        // 不同时为0，使用传入坐标
+        pos_x_default = _pos_x;
+        pos_y_default = _pos_y;
+    } else {
+        // 否则使用默认坐标(240,64)
+        pos_x_default = 6 * n / 8;  
+        pos_y_default = m / 2;  
+    }
+
     this.resolution = resolution;
     this.xi0 = xi0;
     this.xi1 = xi1;
@@ -29,11 +42,13 @@ class Pinball {
     body =new BodyUnion(new CircleBody(n/6, m/2+r/2, D, view),
     new CircleBody(n/6, m/2-r/2, D, view),
     new CircleBody(n/6+r*cos(theta), m/2, D, view),
-    new EllipseBody(6*n/8, m/2, D/2, 1.5, view));
+    // 椭圆体的坐标,定义在Body.pde文件中
+    new EllipseBody(pos_x_default, pos_y_default, D/2, 1.5, view));
     flow = new BDIM(n,m,dt,body,(float)D/Re,QUICK);
     
     if(isResume){
-      flow.resume("saved/init/init.bdim");
+      // flow.resume("saved_1/init/init.bdim");// initial state with swimmer
+      flow.resume("saved_1/init/init_1.bdim");// initial state without swimmer
     }
     
     flood = new FloodPlot(view);
