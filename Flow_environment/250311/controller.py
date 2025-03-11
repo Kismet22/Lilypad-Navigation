@@ -4,7 +4,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import argparse
-from env import flow_field_env
+# from env import flow_field_env
+import flow_field_env
 # from env import flow_field_env_debug_zyp as flow_field_env
 import numpy as np
 from scipy.ndimage import gaussian_filter
