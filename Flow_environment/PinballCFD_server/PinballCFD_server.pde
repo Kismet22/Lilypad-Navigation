@@ -285,9 +285,9 @@ void setUpNewSim(int runNum, float init_pos_x, float init_pos_y) {
 
   // 创建一个新的模拟，传入坐标
   // Pinball声明为false时，环境初始化为稳定来流状态
-  test = new Pinball(resolution, Re, gR, theta, xi0, xi1, xi2, tStep, xLengths, yLengths, false, init_pos_x, init_pos_y);
+//   test = new Pinball(resolution, Re, gR, theta, xi0, xi1, xi2, tStep, xLengths, yLengths, false, init_pos_x, init_pos_y);
   // Pinball声明为true时，环境初始化为混乱来流状态
-  // test = new Pinball(resolution, Re, gR, theta, xi0, xi1, xi2, tStep, xLengths, yLengths, true, init_pos_x, init_pos_y);
+  test = new Pinball(resolution, Re, gR, theta, xi0, xi1, xi2, tStep, xLengths, yLengths, true, init_pos_x, init_pos_y);
 
   dat = new SaveScalar("saved/" + str(runNum) + ".txt", (float) resolution, (float) xLengths, (float) yLengths, 32);
 

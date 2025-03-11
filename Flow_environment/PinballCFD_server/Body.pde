@@ -49,7 +49,7 @@ class Body {
   int n;
   boolean convex=false;
   // pfree true -> false,强制智能体不作旋转
-  boolean pressed=false, xfree=true, yfree=true, pfree=false;
+  boolean pressed=false, xfree=true, yfree=true, pfree=true;
   PVector xc, dxc=new PVector(), dotxc=new PVector(), ddotxc=new PVector();
   PVector handle=new PVector(), ma=new PVector();
   OrthoNormal orth[];
@@ -416,16 +416,20 @@ class EllipseBody extends Body {
 
   EllipseBody( float x, float y, float _h, float _a, Window window) {
     super(x, y, window);
+    // 高度
     h = _h; 
+    // 高宽比
     a = 1./_a;
+    // dx和dy是半宽和半高
     float dx = 0.5*h*a, dy = 0.5*h;
+    // 生成椭圆的离散点
     for ( int i=0; i<m; i++ ) {
       float theta = -TWO_PI*i/((float)m);
       add(xc.x+dx*cos(theta), xc.y+dy*sin(theta));
     }
     end(); // finalize shape
 
-    ma = new PVector(PI*sq(dy),PI*sq(dx),0.125*PI*sq(sq(dx)-sq(dy)));
+    ma = new PVector(PI*sq(dy),PI*sq(dx),0.125*PI*sq(sq(dx)-sq(dy))); // add mass
   }
 }
 /* CircleBody
