@@ -14,6 +14,7 @@ from termcolor import colored
 from math import *
 import matplotlib.colors as mcolors
 
+# 最原始的避障奖励函数版本(非线性)
 
 # Port Check
 def is_port_in_use(port: int) -> bool:
