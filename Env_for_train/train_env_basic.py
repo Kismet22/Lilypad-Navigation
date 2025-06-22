@@ -28,7 +28,7 @@ class foil_env:
     def __init__(self, config=None, info='', local_port=None, network_port=None,
              target_center=None, target_position=None, start_center=None, 
              start_position=None, max_step=None, _include_flow=False, 
-             _plot_flow=False, _proccess_flow=False, _random_range = 56, _swich_range = 24, _flow_range=16, _init_flow_num=0, _pos_normalize=True, _is_test=False):
+             _plot_flow=False, _proccess_flow=False, _random_range = 56, _swich_range = 24, _flow_range=16, _init_flow_num=0, _pos_normalize=True, _is_test=False, _state_dim=18, _is_random = True, _set_random=0):
         """
         Basic Info:
         - Expansion Factor: 16
@@ -52,14 +52,19 @@ class foil_env:
         ]
         self.flow_num = _init_flow_num
         self._is_test = _is_test
+        self._is_random = _is_random
+        self._set_random = _set_random
+        if self._is_random:
+            random.seed(None)
+        else:
+            random.seed(self._set_random)
         #################################################
 
         ###################################################
         # State Space
         self.include_flow = _include_flow
         self._pos_normalize = _pos_normalize
-        # self.observation_dim = 14
-        self.observation_dim = 18
+        self.observation_dim = _state_dim
         self.state = np.zeros(self.observation_dim)
         self.observation_space = Box(low=-1e6, high=1e6, shape=[self.observation_dim])
 
@@ -512,12 +517,21 @@ class foil_env:
         self.old_angle = angle_norm
         self.old_direction = direction
         # self.pre_pressure = self.pressure
-        # TODO:dim=14
-        # self.state = state_1
-        # TODO:dim=16
-        # self.state = np.hstack([state_1, barricade_state]).astype(np.float32)
-        # TODO:dim=18
-        self.state = np.hstack([state_1, barricade_state, direction, angle_norm]).astype(np.float32)
+
+        ########################
+        if self.observation_dim == 10:
+            # no pressure
+            self.state = np.hstack([state_1[:6], barricade_state, direction, angle_norm]).astype(np.float32)
+        elif self.observation_dim == 14:
+            # only position
+            self.state = state_1
+        elif self.observation_dim == 16:
+            # barricate sensor
+            self.state = np.hstack([state_1, barricade_state]).astype(np.float32)
+        elif self.observation_dim == 18:
+            # roll direction guidance
+            self.state = np.hstack([state_1, barricade_state, direction, angle_norm]).astype(np.float32)
+        ########################
 
         if self.include_flow:
             self.u_flow = v_x
@@ -783,12 +797,21 @@ class foil_env:
         self.old_direction = direction
         self._old_dis_2_barricade = _dis_2_barricade
 
-        # TODO:dim=14
-        # self.state = state_1
-        # TODO:dim=16
-        # self.state = np.hstack([state_1, barricade_state]).astype(np.float32)
-        # TODO:dim=18
-        self.state = np.hstack([state_1, barricade_state, direction, angle_norm]).astype(np.float32)
+        ########################
+        if self.observation_dim == 10:
+            # no pressure
+            self.state = np.hstack([state_1[:6], barricade_state, direction, angle_norm]).astype(np.float32)
+        elif self.observation_dim == 14:
+            # only position
+            self.state = state_1
+        elif self.observation_dim == 16:
+            # barricate sensor
+            self.state = np.hstack([state_1, barricade_state]).astype(np.float32)
+        elif self.observation_dim == 18:
+            # roll direction guidance
+            self.state = np.hstack([state_1, barricade_state, direction, angle_norm]).astype(np.float32)
+        ########################
+
         
         if self.include_flow:
             self.u_flow = v_x
