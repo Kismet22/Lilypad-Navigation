@@ -28,7 +28,8 @@ class foil_env:
     def __init__(self, config=None, info='', local_port=None, network_port=None,
              target_center=None, target_position=None, start_center=None, 
              start_position=None, max_step=None, _include_flow=False, 
-             _plot_flow=False, _proccess_flow=False, _random_range = 56, _swich_range = 24, _flow_range=16, _init_flow_num=0, _pos_normalize=True, _is_test=False, _state_dim=18, _is_random = True, _set_random=0):
+             _plot_flow=False, _proccess_flow=False, _random_range = 56, _swich_range = 24, _flow_range=16, _init_flow_num=0, _pos_normalize=True, 
+             _is_test=False, _state_dim=18, _is_random = True, _set_random=0, plot_p = False, u_range=20.0, v_range=20.0, w_range=5.0):
         """
         Basic Info:
         - Expansion Factor: 16
@@ -58,6 +59,7 @@ class foil_env:
             random.seed(None)
         else:
             random.seed(self._set_random)
+        self.plot_p = plot_p
         #################################################
 
         ###################################################
@@ -70,8 +72,12 @@ class foil_env:
 
         # Action Space
         self.action_dim = 3
-        low = np.array([-20.0, -20.0, -5.0], dtype=np.float32)
-        high = np.array([20.0, 20.0, 5.0], dtype=np.float32)
+
+        ###############################
+        low = np.array([-float(u_range), -float(v_range), -float(w_range)], dtype=np.float32)
+        high = np.array([float(u_range), float(v_range), float(w_range)], dtype=np.float32)
+        ###############################
+
         self.low = low
         self.high = high
         self.action_space = Box(low=low, high=high, shape=(self.action_dim,), dtype=np.float32)
@@ -157,6 +163,7 @@ class foil_env:
         # State Record
         # Agent Info
         self.agent_pos_history = []
+        self.pressure_history = []
         self.angle = 0
         self.vel_angle = 0
         self.speed = 0
@@ -181,7 +188,12 @@ class foil_env:
         # Plot Settings
         self._plot_flow = _plot_flow
         self.frame_pause = 0.03
-        self.fig, self.ax = plt.subplots(figsize=(16, 9))
+        # self.fig, self.ax = plt.subplots(figsize=(16, 9))
+        if self.plot_p:
+            self.fig, (self.ax_env, self.ax_pressure) = plt.subplots(1, 2, figsize=(16, 9))
+        else:
+            self.fig, self.ax_env = plt.subplots(1, 1, figsize=(16, 9))
+            self.ax_pressure = None
         ###########################################################
 
         #############################################################
@@ -309,6 +321,8 @@ class foil_env:
         self.speed = sqrt(state_1[0]**2 + state_1[1]**2)
         self.vel_angle = abs(state_1[2]) # [1e-2, 1e-1]
         self.pressure = state_1[6:14]
+        if self.plot_p:
+            self.pressure_history.append(self.pressure.copy())
         ########################
 
         ########################################################################################
@@ -495,7 +509,12 @@ class foil_env:
 
                 ########################
                 # mixed reward
-                _reward = -10 * self.dt + target_reward + avoid_penalty + angle_reward + roll_swich_punish
+                if self.observation_dim == 18 or self.observation_dim == 10:
+                    _reward = -10 * self.dt + target_reward + avoid_penalty + angle_reward + roll_swich_punish
+                if self.observation_dim == 14:
+                    _reward = -10 * self.dt + target_reward
+                if self.observation_dim == 16:
+                    _reward = -10 * self.dt + target_reward + 1.6 * avoid_penalty
                 ########################
 
                 ########################
@@ -665,6 +684,9 @@ class foil_env:
         self.angle = state_1[5]
         self.speed = sqrt(state_1[0]**2 + state_1[1]**2)
         self.pressure = state_1[6:14]
+        if self.plot_p:
+            # self.pressure_history.append(self.pre_pressure.copy())
+            self.pressure_history.append(np.zeros(8))
         ########################################################################################
 
         ########################################################################################
@@ -922,25 +944,167 @@ class foil_env:
         if self.local_port == None:
             self.server.terminate()
     
+    # def _render_frame(self, _save=False):
+    #     if len(self.agent_pos_history) == 0:
+    #         return
+    #     # clear coordinate
+    #     ax = self.ax
+    #     ax.clear()
+    #     # draw
+    #     self.plot_env(ax)
+    #     plt.draw()  
+    #     plt.pause(self.frame_pause)
+    #     if _save:
+    #         save_path = './model_output/path.png'
+    #         # make sure path is legal
+    #         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    #         plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    #         print(f"Image saved to {save_path}")
+
+
+    # def plot_env(self, ax, sample_rate=10):
+    #     history = self.agent_pos_history
+    #     start_default = [220, 64]
+    #     target_default = [64, 64]
+    #     start_point = history[0]
+    #     target = self.target_position
+    #     circles = self.circles
+    #     agent_pos = self.agent_pos
+    #     agent_angle = self.angle
+    #     x_range = self.x_range
+    #     y_range = self.y_range
+    #     flow_x = self.u_flow
+    #     flow_y = self.v_flow
+    #     speed = self.speed
+    #     flow_speed = self.flow_speed
+
+    #     ax.clear()
+    #     # Plot Flow Speed
+    #     if flow_x is not None and flow_y is not None:
+    #         speed_field = np.sqrt(flow_x**2 + flow_y**2)
+
+    #         # heat map of flow speed
+    #         cmap = mcolors.LinearSegmentedColormap.from_list("red_white_blue", ["blue", "white", "red"])
+    #         # normalize
+    #         norm = mcolors.Normalize(vmin=np.min(speed_field), vmax=np.max(speed_field))
+    #         # grid
+    #         x = np.linspace(0, x_range, flow_x.shape[0])
+    #         y = np.linspace(0, y_range, flow_x.shape[1])
+    #         X, Y = np.meshgrid(x, y)
+    #         # using pcolormesh replace imshow
+    #         im = ax.pcolormesh(X, Y, speed_field.T, cmap=cmap, norm=norm, shading='auto', alpha=0.5)
+    #         # colorbar info
+    #         if not hasattr(ax, "colorbar"):
+    #             ax.colorbar = plt.colorbar(im, ax=ax, fraction=0.05, label="Speed (m/s)")
+
+    #         # speed quiver
+    #         sample_rate = max(10, sample_rate)
+    #         x_sample = x[::sample_rate]
+    #         y_sample = y[::sample_rate]
+    #         X_sample, Y_sample = np.meshgrid(x_sample, y_sample)
+    #         sampled_flow_x = flow_x[::sample_rate, ::sample_rate]
+    #         sampled_flow_y = flow_y[::sample_rate, ::sample_rate]
+    #         ax.quiver(X_sample, Y_sample, sampled_flow_x * 1.5, sampled_flow_y * 1.5, 
+    #                 scale=100, scale_units='width', color='black', alpha=0.6, zorder=2, 
+    #                 width=0.002, pivot='middle', headwidth=3, headaxislength=3)
+
+    #     # Start
+    #     ax.scatter(*start_point, color='orange', label='Start Point', zorder=5)
+    #     # Target
+    #     ax.scatter(*target, color='green', label='Target Point', zorder=5)
+    #     ax.add_patch(plt.Circle(target, self.switch_range, color='green', fill=False, linestyle='--'))
+    #     # Cylinder
+    #     for circle in circles:
+    #         ax.add_patch(plt.Circle(circle["center"], circle["radius"], color='red', alpha=0.3))
+    #         # ax.add_patch(plt.Circle(circle["center"], self.max_detect_dis, color='red', fill=False, linestyle='--'))
+
+    #     agent_x, agent_y = self.agent_pos
+    #     radius = self.max_detect_dis
+    #     fov_angle = 180
+
+    #     angle_deg = np.degrees(self.angle)
+    #     center_angle = (angle_deg + 180) % 360
+    #     start_angle = (center_angle - fov_angle / 2) % 360
+    #     end_angle = (center_angle + fov_angle / 2) % 360
+    #     wedge = patches.Wedge(
+    #         center=(agent_x, agent_y),
+    #         r=radius,
+    #         theta1=start_angle,
+    #         theta2=end_angle,
+    #         facecolor='orange',
+    #         alpha=0.2
+    #     )
+    #     ax.add_patch(wedge)
+        
+    #     # History Trajectory
+    #     if history:
+    #         hx, hy = zip(*history)
+    #         ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
+
+    #     # Random Range
+    #     ax.add_patch(plt.Circle(target_default, 56, color='green', fill=False, linestyle='--'))
+    #     ax.add_patch(plt.Circle(start_default, 56, color='orange', fill=False, linestyle='--'))
+
+    #     # Agent(Ellipse)
+    #     ellipse_height = circle["radius"]
+    #     ellipse_width = ellipse_height / 1.5
+    #     ellipse = Ellipse(xy=agent_pos, width=ellipse_height, height=ellipse_width, 
+    #                         angle= np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4)
+    #     ax.add_patch(ellipse)
+
+    #     # Agent Coordinate
+    #     axis_length = 10.0
+    #     cos_angle = np.cos(agent_angle)
+    #     sin_angle = np.sin(agent_angle)
+
+    #     ax_local, ay_local = self.action[0], self.action[1]
+    #     # combine
+    #     global_action_x = ax_local * cos_angle + ay_local * (-sin_angle)
+    #     global_action_y = ax_local * sin_angle + ay_local * cos_angle
+    #     ax.quiver(agent_pos[0], agent_pos[1], global_action_x/2, global_action_y/2,
+    #             angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='blue', label="Action")
+
+    #     # Axis
+    #     ax.set_xlim(0, x_range)
+    #     ax.set_ylim(0, y_range)
+    #     ax.set_aspect('equal', adjustable='box')
+    #     ax.grid(True, linestyle='--', alpha=0.5)
+    #     ax.legend()
+    #     ax.set_title("Moving Trajectory")
+
+
     def _render_frame(self, _save=False):
         if len(self.agent_pos_history) == 0:
             return
-        # clear coordinate
-        ax = self.ax
-        ax.clear()
-        # draw
-        self.plot_env(ax)
-        plt.draw()  
+
+        self.ax_env.clear()
+        if self.ax_pressure is not None:
+            self.ax_pressure.clear()
+
+        self.plot_env(self.ax_env, self.ax_pressure)
+
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
         plt.pause(self.frame_pause)
+
+        # === 可选保存 ===
         if _save:
             save_path = './model_output/path.png'
-            # make sure path is legal
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            self.fig.savefig(save_path, bbox_inches='tight', dpi=300)
             print(f"Image saved to {save_path}")
 
+    def plot_env(self, ax_env, ax_pressure=None, sample_rate=10):
+        """
+        绘制环境图（流场 + 轨迹 + 代理）+ 可选压力图
 
-    def plot_env(self, ax, sample_rate=10):
+        Parameters:
+            ax_env: matplotlib Axes，用于绘制环境轨迹
+            ax_pressure: matplotlib Axes，可选，用于绘制压力曲线
+            sample_rate: quiver 的采样率
+        """
+
+        # === 环境参数 ===
         history = self.agent_pos_history
         start_default = [220, 64]
         target_default = [64, 64]
@@ -953,54 +1117,50 @@ class foil_env:
         y_range = self.y_range
         flow_x = self.u_flow
         flow_y = self.v_flow
-        speed = self.speed
-        flow_speed = self.flow_speed
 
+        ax = ax_env
         ax.clear()
-        # Plot Flow Speed
+
+        # === Flow Field ===
         if flow_x is not None and flow_y is not None:
             speed_field = np.sqrt(flow_x**2 + flow_y**2)
-
-            # heat map of flow speed
             cmap = mcolors.LinearSegmentedColormap.from_list("red_white_blue", ["blue", "white", "red"])
-            # normalize
             norm = mcolors.Normalize(vmin=np.min(speed_field), vmax=np.max(speed_field))
-            # grid
             x = np.linspace(0, x_range, flow_x.shape[0])
             y = np.linspace(0, y_range, flow_x.shape[1])
             X, Y = np.meshgrid(x, y)
-            # using pcolormesh replace imshow
+
             im = ax.pcolormesh(X, Y, speed_field.T, cmap=cmap, norm=norm, shading='auto', alpha=0.5)
-            # colorbar info
             if not hasattr(ax, "colorbar"):
                 ax.colorbar = plt.colorbar(im, ax=ax, fraction=0.05, label="Speed (m/s)")
 
-            # speed quiver
             sample_rate = max(10, sample_rate)
             x_sample = x[::sample_rate]
             y_sample = y[::sample_rate]
             X_sample, Y_sample = np.meshgrid(x_sample, y_sample)
             sampled_flow_x = flow_x[::sample_rate, ::sample_rate]
             sampled_flow_y = flow_y[::sample_rate, ::sample_rate]
-            ax.quiver(X_sample, Y_sample, sampled_flow_x * 1.5, sampled_flow_y * 1.5, 
-                    scale=100, scale_units='width', color='black', alpha=0.6, zorder=2, 
-                    width=0.002, pivot='middle', headwidth=3, headaxislength=3)
+            ax.quiver(X_sample, Y_sample,
+                    sampled_flow_x * 1.5, sampled_flow_y * 1.5,
+                    scale=100, scale_units='width',
+                    color='black', alpha=0.6, zorder=2,
+                    width=0.002, pivot='middle',
+                    headwidth=3, headaxislength=3)
 
-        # Start
+        # === Start & Target ===
         ax.scatter(*start_point, color='orange', label='Start Point', zorder=5)
-        # Target
         ax.scatter(*target, color='green', label='Target Point', zorder=5)
         ax.add_patch(plt.Circle(target, self.switch_range, color='green', fill=False, linestyle='--'))
-        # Cylinder
+
+        # === Obstacles ===
         for circle in circles:
             ax.add_patch(plt.Circle(circle["center"], circle["radius"], color='red', alpha=0.3))
-            # ax.add_patch(plt.Circle(circle["center"], self.max_detect_dis, color='red', fill=False, linestyle='--'))
 
-        agent_x, agent_y = self.agent_pos
+        # === Agent Field of View (Wedge) ===
+        agent_x, agent_y = agent_pos
         radius = self.max_detect_dis
         fov_angle = 180
-
-        angle_deg = np.degrees(self.angle)
+        angle_deg = np.degrees(agent_angle)
         center_angle = (angle_deg + 180) % 360
         start_angle = (center_angle - fov_angle / 2) % 360
         end_angle = (center_angle + fov_angle / 2) % 360
@@ -1013,39 +1173,57 @@ class foil_env:
             alpha=0.2
         )
         ax.add_patch(wedge)
-        
-        # History Trajectory
+
+        # === Trajectory ===
         if history:
             hx, hy = zip(*history)
             ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
 
-        # Random Range
+        # === Random Range (Default circles) ===
         ax.add_patch(plt.Circle(target_default, 56, color='green', fill=False, linestyle='--'))
         ax.add_patch(plt.Circle(start_default, 56, color='orange', fill=False, linestyle='--'))
 
-        # Agent(Ellipse)
-        ellipse_height = circle["radius"]
+        # === Agent Shape (Ellipse) ===
+        if circles:  # 防止 circles 为空时报错
+            ellipse_height = circles[0]["radius"]
+        else:
+            ellipse_height = 10  # fallback
         ellipse_width = ellipse_height / 1.5
-        ellipse = Ellipse(xy=agent_pos, width=ellipse_height, height=ellipse_width, 
-                            angle= np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4)
+        ellipse = Ellipse(xy=agent_pos, width=ellipse_height, height=ellipse_width,
+                        angle=np.degrees(agent_angle),
+                        color='orange', alpha=0.7, zorder=4)
         ax.add_patch(ellipse)
 
-        # Agent Coordinate
-        axis_length = 10.0
+        # === Agent Local Coordinate (Action Vector) ===
         cos_angle = np.cos(agent_angle)
         sin_angle = np.sin(agent_angle)
-
         ax_local, ay_local = self.action[0], self.action[1]
-        # combine
         global_action_x = ax_local * cos_angle + ay_local * (-sin_angle)
         global_action_y = ax_local * sin_angle + ay_local * cos_angle
-        ax.quiver(agent_pos[0], agent_pos[1], global_action_x/2, global_action_y/2,
-                angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='blue', label="Action")
+        ax.quiver(agent_pos[0], agent_pos[1],
+                global_action_x / 2, global_action_y / 2,
+                angles='xy', scale_units='xy', scale=1,
+                width=0.002, headwidth=2, color='blue', label="Action")
 
-        # Axis
+        # === Axis Config ===
         ax.set_xlim(0, x_range)
         ax.set_ylim(0, y_range)
         ax.set_aspect('equal', adjustable='box')
         ax.grid(True, linestyle='--', alpha=0.5)
         ax.legend()
         ax.set_title("Moving Trajectory")
+
+        # === Pressure Plot (Optional) ===
+        if self.plot_p and ax_pressure is not None:
+            ax_pressure.clear()
+            if hasattr(self, "pressure_history"):
+                pressure_history = np.array(self.pressure_history)  # shape: [time, 8]
+                timesteps = np.arange(len(pressure_history))
+                # 每个压力点单独画
+                for i in range(pressure_history.shape[1]):
+                    ax_pressure.plot(timesteps, pressure_history[:, i], label=f"P{i}")
+                ax_pressure.set_xlabel("Time Step")
+                ax_pressure.set_ylabel("Pressure")
+                ax_pressure.set_title("Pressure vs Time")
+                ax_pressure.legend()
+                ax_pressure.grid(True, linestyle='--', alpha=0.5)
