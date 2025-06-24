@@ -958,7 +958,7 @@ class foil_env:
         self.fig.canvas.flush_events()
         plt.pause(self.frame_pause)
 
-        # === 可选保存 ===
+        # === save ===
         if _save:
             save_path = './model_output/path.png'
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -967,15 +967,15 @@ class foil_env:
 
     def plot_env(self, ax_env, ax_pressure=None, sample_rate=10):
         """
-        绘制环境图（流场 + 轨迹 + 代理）+ 可选压力图
+        Plot Environment(flow + trajectory + agent)+ pressure(if needed)
 
         Parameters:
-            ax_env: matplotlib Axes，用于绘制环境轨迹
-            ax_pressure: matplotlib Axes，可选，用于绘制压力曲线
-            sample_rate: quiver 的采样率
+            ax_env: matplotlib Axes, plot env
+            ax_pressure: matplotlib Axes, plot pressure changing
+            sample_rate: quiver rate
         """
 
-        # === 环境参数 ===
+        # === Env Parameters ===
         history = self.agent_pos_history
         start_default = [220, 64]
         target_default = [64, 64]
@@ -1055,7 +1055,7 @@ class foil_env:
         ax.add_patch(plt.Circle(start_default, 56, color='orange', fill=False, linestyle='--'))
 
         # === Agent Shape (Ellipse) ===
-        if circles:  # 防止 circles 为空时报错
+        if circles:
             ellipse_height = circles[0]["radius"]
         else:
             ellipse_height = 10  # fallback
@@ -1090,7 +1090,7 @@ class foil_env:
             if hasattr(self, "pressure_history"):
                 pressure_history = np.array(self.pressure_history)  # shape: [time, 8]
                 timesteps = np.arange(len(pressure_history))
-                # 每个压力点单独画
+                # plot every single pressure
                 for i in range(pressure_history.shape[1]):
                     ax_pressure.plot(timesteps, pressure_history[:, i], label=f"P{i}")
                 ax_pressure.set_xlabel("Time Step")
@@ -1099,7 +1099,7 @@ class foil_env:
                 ax_pressure.legend()
                 ax_pressure.grid(True, linestyle='--', alpha=0.5)
 
-
+                
     # def _render_frame(self, _save=False):
     #     if len(self.agent_pos_history) == 0:
     #         return
