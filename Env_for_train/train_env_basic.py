@@ -944,135 +944,6 @@ class foil_env:
         if self.local_port == None:
             self.server.terminate()
     
-    # def _render_frame(self, _save=False):
-    #     if len(self.agent_pos_history) == 0:
-    #         return
-    #     # clear coordinate
-    #     ax = self.ax
-    #     ax.clear()
-    #     # draw
-    #     self.plot_env(ax)
-    #     plt.draw()  
-    #     plt.pause(self.frame_pause)
-    #     if _save:
-    #         save_path = './model_output/path.png'
-    #         # make sure path is legal
-    #         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    #         plt.savefig(save_path, bbox_inches='tight', dpi=300)
-    #         print(f"Image saved to {save_path}")
-
-
-    # def plot_env(self, ax, sample_rate=10):
-    #     history = self.agent_pos_history
-    #     start_default = [220, 64]
-    #     target_default = [64, 64]
-    #     start_point = history[0]
-    #     target = self.target_position
-    #     circles = self.circles
-    #     agent_pos = self.agent_pos
-    #     agent_angle = self.angle
-    #     x_range = self.x_range
-    #     y_range = self.y_range
-    #     flow_x = self.u_flow
-    #     flow_y = self.v_flow
-    #     speed = self.speed
-    #     flow_speed = self.flow_speed
-
-    #     ax.clear()
-    #     # Plot Flow Speed
-    #     if flow_x is not None and flow_y is not None:
-    #         speed_field = np.sqrt(flow_x**2 + flow_y**2)
-
-    #         # heat map of flow speed
-    #         cmap = mcolors.LinearSegmentedColormap.from_list("red_white_blue", ["blue", "white", "red"])
-    #         # normalize
-    #         norm = mcolors.Normalize(vmin=np.min(speed_field), vmax=np.max(speed_field))
-    #         # grid
-    #         x = np.linspace(0, x_range, flow_x.shape[0])
-    #         y = np.linspace(0, y_range, flow_x.shape[1])
-    #         X, Y = np.meshgrid(x, y)
-    #         # using pcolormesh replace imshow
-    #         im = ax.pcolormesh(X, Y, speed_field.T, cmap=cmap, norm=norm, shading='auto', alpha=0.5)
-    #         # colorbar info
-    #         if not hasattr(ax, "colorbar"):
-    #             ax.colorbar = plt.colorbar(im, ax=ax, fraction=0.05, label="Speed (m/s)")
-
-    #         # speed quiver
-    #         sample_rate = max(10, sample_rate)
-    #         x_sample = x[::sample_rate]
-    #         y_sample = y[::sample_rate]
-    #         X_sample, Y_sample = np.meshgrid(x_sample, y_sample)
-    #         sampled_flow_x = flow_x[::sample_rate, ::sample_rate]
-    #         sampled_flow_y = flow_y[::sample_rate, ::sample_rate]
-    #         ax.quiver(X_sample, Y_sample, sampled_flow_x * 1.5, sampled_flow_y * 1.5, 
-    #                 scale=100, scale_units='width', color='black', alpha=0.6, zorder=2, 
-    #                 width=0.002, pivot='middle', headwidth=3, headaxislength=3)
-
-    #     # Start
-    #     ax.scatter(*start_point, color='orange', label='Start Point', zorder=5)
-    #     # Target
-    #     ax.scatter(*target, color='green', label='Target Point', zorder=5)
-    #     ax.add_patch(plt.Circle(target, self.switch_range, color='green', fill=False, linestyle='--'))
-    #     # Cylinder
-    #     for circle in circles:
-    #         ax.add_patch(plt.Circle(circle["center"], circle["radius"], color='red', alpha=0.3))
-    #         # ax.add_patch(plt.Circle(circle["center"], self.max_detect_dis, color='red', fill=False, linestyle='--'))
-
-    #     agent_x, agent_y = self.agent_pos
-    #     radius = self.max_detect_dis
-    #     fov_angle = 180
-
-    #     angle_deg = np.degrees(self.angle)
-    #     center_angle = (angle_deg + 180) % 360
-    #     start_angle = (center_angle - fov_angle / 2) % 360
-    #     end_angle = (center_angle + fov_angle / 2) % 360
-    #     wedge = patches.Wedge(
-    #         center=(agent_x, agent_y),
-    #         r=radius,
-    #         theta1=start_angle,
-    #         theta2=end_angle,
-    #         facecolor='orange',
-    #         alpha=0.2
-    #     )
-    #     ax.add_patch(wedge)
-        
-    #     # History Trajectory
-    #     if history:
-    #         hx, hy = zip(*history)
-    #         ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
-
-    #     # Random Range
-    #     ax.add_patch(plt.Circle(target_default, 56, color='green', fill=False, linestyle='--'))
-    #     ax.add_patch(plt.Circle(start_default, 56, color='orange', fill=False, linestyle='--'))
-
-    #     # Agent(Ellipse)
-    #     ellipse_height = circle["radius"]
-    #     ellipse_width = ellipse_height / 1.5
-    #     ellipse = Ellipse(xy=agent_pos, width=ellipse_height, height=ellipse_width, 
-    #                         angle= np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4)
-    #     ax.add_patch(ellipse)
-
-    #     # Agent Coordinate
-    #     axis_length = 10.0
-    #     cos_angle = np.cos(agent_angle)
-    #     sin_angle = np.sin(agent_angle)
-
-    #     ax_local, ay_local = self.action[0], self.action[1]
-    #     # combine
-    #     global_action_x = ax_local * cos_angle + ay_local * (-sin_angle)
-    #     global_action_y = ax_local * sin_angle + ay_local * cos_angle
-    #     ax.quiver(agent_pos[0], agent_pos[1], global_action_x/2, global_action_y/2,
-    #             angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='blue', label="Action")
-
-    #     # Axis
-    #     ax.set_xlim(0, x_range)
-    #     ax.set_ylim(0, y_range)
-    #     ax.set_aspect('equal', adjustable='box')
-    #     ax.grid(True, linestyle='--', alpha=0.5)
-    #     ax.legend()
-    #     ax.set_title("Moving Trajectory")
-
-
     def _render_frame(self, _save=False):
         if len(self.agent_pos_history) == 0:
             return
@@ -1227,3 +1098,132 @@ class foil_env:
                 ax_pressure.set_title("Pressure vs Time")
                 ax_pressure.legend()
                 ax_pressure.grid(True, linestyle='--', alpha=0.5)
+
+
+    # def _render_frame(self, _save=False):
+    #     if len(self.agent_pos_history) == 0:
+    #         return
+    #     # clear coordinate
+    #     ax = self.ax
+    #     ax.clear()
+    #     # draw
+    #     self.plot_env(ax)
+    #     plt.draw()  
+    #     plt.pause(self.frame_pause)
+    #     if _save:
+    #         save_path = './model_output/path.png'
+    #         # make sure path is legal
+    #         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    #         plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    #         print(f"Image saved to {save_path}")
+
+
+    # def plot_env(self, ax, sample_rate=10):
+    #     history = self.agent_pos_history
+    #     start_default = [220, 64]
+    #     target_default = [64, 64]
+    #     start_point = history[0]
+    #     target = self.target_position
+    #     circles = self.circles
+    #     agent_pos = self.agent_pos
+    #     agent_angle = self.angle
+    #     x_range = self.x_range
+    #     y_range = self.y_range
+    #     flow_x = self.u_flow
+    #     flow_y = self.v_flow
+    #     speed = self.speed
+    #     flow_speed = self.flow_speed
+
+    #     ax.clear()
+    #     # Plot Flow Speed
+    #     if flow_x is not None and flow_y is not None:
+    #         speed_field = np.sqrt(flow_x**2 + flow_y**2)
+
+    #         # heat map of flow speed
+    #         cmap = mcolors.LinearSegmentedColormap.from_list("red_white_blue", ["blue", "white", "red"])
+    #         # normalize
+    #         norm = mcolors.Normalize(vmin=np.min(speed_field), vmax=np.max(speed_field))
+    #         # grid
+    #         x = np.linspace(0, x_range, flow_x.shape[0])
+    #         y = np.linspace(0, y_range, flow_x.shape[1])
+    #         X, Y = np.meshgrid(x, y)
+    #         # using pcolormesh replace imshow
+    #         im = ax.pcolormesh(X, Y, speed_field.T, cmap=cmap, norm=norm, shading='auto', alpha=0.5)
+    #         # colorbar info
+    #         if not hasattr(ax, "colorbar"):
+    #             ax.colorbar = plt.colorbar(im, ax=ax, fraction=0.05, label="Speed (m/s)")
+
+    #         # speed quiver
+    #         sample_rate = max(10, sample_rate)
+    #         x_sample = x[::sample_rate]
+    #         y_sample = y[::sample_rate]
+    #         X_sample, Y_sample = np.meshgrid(x_sample, y_sample)
+    #         sampled_flow_x = flow_x[::sample_rate, ::sample_rate]
+    #         sampled_flow_y = flow_y[::sample_rate, ::sample_rate]
+    #         ax.quiver(X_sample, Y_sample, sampled_flow_x * 1.5, sampled_flow_y * 1.5, 
+    #                 scale=100, scale_units='width', color='black', alpha=0.6, zorder=2, 
+    #                 width=0.002, pivot='middle', headwidth=3, headaxislength=3)
+
+    #     # Start
+    #     ax.scatter(*start_point, color='orange', label='Start Point', zorder=5)
+    #     # Target
+    #     ax.scatter(*target, color='green', label='Target Point', zorder=5)
+    #     ax.add_patch(plt.Circle(target, self.switch_range, color='green', fill=False, linestyle='--'))
+    #     # Cylinder
+    #     for circle in circles:
+    #         ax.add_patch(plt.Circle(circle["center"], circle["radius"], color='red', alpha=0.3))
+    #         # ax.add_patch(plt.Circle(circle["center"], self.max_detect_dis, color='red', fill=False, linestyle='--'))
+
+    #     agent_x, agent_y = self.agent_pos
+    #     radius = self.max_detect_dis
+    #     fov_angle = 180
+
+    #     angle_deg = np.degrees(self.angle)
+    #     center_angle = (angle_deg + 180) % 360
+    #     start_angle = (center_angle - fov_angle / 2) % 360
+    #     end_angle = (center_angle + fov_angle / 2) % 360
+    #     wedge = patches.Wedge(
+    #         center=(agent_x, agent_y),
+    #         r=radius,
+    #         theta1=start_angle,
+    #         theta2=end_angle,
+    #         facecolor='orange',
+    #         alpha=0.2
+    #     )
+    #     ax.add_patch(wedge)
+        
+    #     # History Trajectory
+    #     if history:
+    #         hx, hy = zip(*history)
+    #         ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
+
+    #     # Random Range
+    #     ax.add_patch(plt.Circle(target_default, 56, color='green', fill=False, linestyle='--'))
+    #     ax.add_patch(plt.Circle(start_default, 56, color='orange', fill=False, linestyle='--'))
+
+    #     # Agent(Ellipse)
+    #     ellipse_height = circle["radius"]
+    #     ellipse_width = ellipse_height / 1.5
+    #     ellipse = Ellipse(xy=agent_pos, width=ellipse_height, height=ellipse_width, 
+    #                         angle= np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4)
+    #     ax.add_patch(ellipse)
+
+    #     # Agent Coordinate
+    #     axis_length = 10.0
+    #     cos_angle = np.cos(agent_angle)
+    #     sin_angle = np.sin(agent_angle)
+
+    #     ax_local, ay_local = self.action[0], self.action[1]
+    #     # combine
+    #     global_action_x = ax_local * cos_angle + ay_local * (-sin_angle)
+    #     global_action_y = ax_local * sin_angle + ay_local * cos_angle
+    #     ax.quiver(agent_pos[0], agent_pos[1], global_action_x/2, global_action_y/2,
+    #             angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='blue', label="Action")
+
+    #     # Axis
+    #     ax.set_xlim(0, x_range)
+    #     ax.set_ylim(0, y_range)
+    #     ax.set_aspect('equal', adjustable='box')
+    #     ax.grid(True, linestyle='--', alpha=0.5)
+    #     ax.legend()
+    #     ax.set_title("Moving Trajectory")
