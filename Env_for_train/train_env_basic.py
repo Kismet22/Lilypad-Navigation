@@ -55,10 +55,6 @@ class foil_env:
         self._is_test = _is_test
         self._is_random = _is_random
         self._set_random = _set_random
-        if self._is_random:
-            random.seed(None)
-        else:
-            random.seed(self._set_random)
         self.plot_p = plot_p
         #################################################
 
@@ -199,10 +195,13 @@ class foil_env:
         #############################################################
         # Port Settings
         flow_flag = 'true' if self.include_flow else 'false'
+        # port = int(6000)
         while True:
             port = random.randint(6000, 8000)
             if not is_port_in_use(port):
                 break
+            # port += 1
+            
         port = port if network_port == None else network_port
         if local_port == None:
             command = (
@@ -218,6 +217,11 @@ class foil_env:
             self.proxy = ServerProxy(f"http://localhost:{port}/")
         else:
             self.proxy = ServerProxy(f"http://localhost:{local_port}/")
+        
+        if self._is_random:
+            random.seed(None)
+        else:
+            random.seed(self._set_random)
         #############################################################
 
 
