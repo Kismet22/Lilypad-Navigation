@@ -484,14 +484,17 @@ def train(model_id, render_mode=None, checkpoint_path=None):
         cur_model_running_return += current_ep_return
         cur_model_running_episodes += 1
 
+        # 写入批次缓存
         for key in batch_data:
             batch_data[key].append(episode_data[key])
 
-        i_episode += 1
+        # 存储
         if (i_episode + 1) % batch_size == 0:
             print(colored("**** Episode Saved ****", 'green'))
             save_episode_to_hdf5(save_path, batch_data)
             batch_data = {key: [] for key in batch_data}
+        
+        i_episode += 1
 
     if batch_data["state"]:
         print(colored("**** Episode Saved ****", 'green'))
