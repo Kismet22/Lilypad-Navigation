@@ -6,7 +6,9 @@ import numpy as np
 from datetime import datetime
 from termcolor import colored
 import time
-from gym.spaces import Box
+from collections import deque
+import torch.nn as nn
+from math import *
 
 ####### PPO_METHOD #######
 import icm_ppo
@@ -17,17 +19,142 @@ import hjbppo
 from hjbppo import HJB_PPO
 
 ####### ENVIRONMENT #######
-from env_new import train_env_separate
+from env import flow_field_env_2
+# Normal task Basic
+from env_new import train_env_basic
+from env_new import train_env_basic_1
+from env_new import train_env_basic_2
+from env_new import train_env_basic_3
 
 ####### DEVICE #######
 device = my_ppo_net_1.device
 # device = hjbppo.device
 # device = icm_ppo.device
 
-# normal
-ppo_path_1 = './models/normal_task/basic2_0611_1.pth'
-# easy
-ppo_path_0 = './models/easy_task/0515_5.pth'
+
+####### PREDICTOR #######
+class Seq2SeqPredictor(nn.Module):
+    def __init__(self, input_dim=17, condition_dim=3, output_dim=14, hidden_size=128, lstm_layers=2, pred_steps=5, teacher_forcing=True):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.lstm_layers = lstm_layers
+        self.pred_steps = pred_steps
+        self.output_dim = output_dim
+        self.teacher_forcing = teacher_forcing
+
+        # Encoder: 处理 (pressure + vel + acc)
+        self.encoder_input_fc = nn.Linear(input_dim, hidden_size)
+        self.encoder_lstm = nn.LSTM(
+            input_size=hidden_size,
+            hidden_size=hidden_size,
+            num_layers=lstm_layers,
+            batch_first=True
+        )
+
+        # Decoder: 输入 (pred_pressure_prev + future_acc)
+        self.decoder_input_fc = nn.Linear(output_dim + condition_dim, hidden_size)
+        self.decoder_lstm = nn.LSTM(
+            input_size=hidden_size,
+            hidden_size=hidden_size,
+            num_layers=lstm_layers,
+            batch_first=True
+        )
+        self.decoder_output_fc = nn.Linear(hidden_size, output_dim)
+
+        self._initialize_weights()
+
+    def forward(self, past_pressure, past_agent, future_acc, target_state=None):
+        """
+        past_pressure: (B, T_in, 8)
+        past_agent(pos speed acc): (B, T_in, 9)
+        future_acc: (B, T_pred, 3)
+        target_state(pos speed pressure): (B, T_pred, 14) for teacher forcing
+        """
+        B, T_in, _ = past_pressure.shape
+        T_pred = future_acc.shape[1]
+
+        # ===== Encoder =====
+        enc_input = torch.cat([past_agent, past_pressure], dim=-1)  # (B, T_in, 17)
+        enc_input = self.encoder_input_fc(enc_input)                # (B, T_in, hidden_size)
+        h0 = torch.zeros(self.lstm_layers, B, self.hidden_size, device=past_pressure.device)
+        c0 = torch.zeros(self.lstm_layers, B, self.hidden_size, device=past_pressure.device)
+        _, (h_n, c_n) = self.encoder_lstm(enc_input, (h0, c0))
+
+        # ===== Decoder =====
+        preds = []
+        decoder_input = torch.zeros(B, self.output_dim, device=past_pressure.device)  # 初始输入为零向量
+
+        h_dec, c_dec = h_n, c_n
+        for t in range(T_pred):
+            cond_acc = future_acc[:, t, :]                                        # (B, 3)
+            dec_input = torch.cat([decoder_input, cond_acc], dim=-1)              # (B, 14+3)
+            dec_input = self.decoder_input_fc(dec_input).unsqueeze(1)             # (B, 1, hidden_size)
+
+            dec_output, (h_dec, c_dec) = self.decoder_lstm(dec_input, (h_dec, c_dec))
+            pred_p = self.decoder_output_fc(dec_output.squeeze(1))                # (B, 14)
+
+            preds.append(pred_p.unsqueeze(1))                                     # [(B, 1, 14), ...]
+
+            if self.teacher_forcing and self.training and target_state is not None:
+                decoder_input = target_state[:, t, :]
+            else:
+                decoder_input = pred_p
+
+        preds = torch.cat(preds, dim=1)                                           # (B, T_pred, 14)
+        return preds
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LSTM):
+                for name, param in m.named_parameters():
+                    if 'weight_ih' in name:
+                        nn.init.xavier_uniform_(param.data)
+                    elif 'weight_hh' in name:
+                        nn.init.orthogonal_(param.data)
+                    elif 'bias' in name:
+                        nn.init.constant_(param.data, 0)
+
+
+def load_model(model_path, hidden_size, num_layers, output_dim, pred_steps, device):
+    model = Seq2SeqPredictor(input_dim=17, condition_dim=3, output_dim=14, hidden_size=hidden_size, lstm_layers=num_layers, pred_steps=pred_steps, teacher_forcing=False).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    model.eval()
+    return model
+
+def predict_pressure(p_model, input_window, other_window, future_action_seq, device):
+    input_tensor = torch.from_numpy(np.stack(input_window, axis=0)).unsqueeze(0).to(dtype=torch.float32, device=device)  # (1, 5, 8)
+    other_tensor = torch.from_numpy(np.stack(other_window, axis=0)).unsqueeze(0).to(dtype=torch.float32, device=device)  # (1, 5, 9)
+    future_tensor = torch.from_numpy(future_action_seq).unsqueeze(0).to(dtype=torch.float32, device=device)             # (1, 5, 3)
+    with torch.no_grad():
+        outputs = p_model(input_tensor, other_tensor, future_tensor).cpu().numpy() # (1, 5, 14)
+    return outputs
+
+def get_future_pressure_batch(p_model, input_window, other_window, action_window, device, target, norm_range):
+    """
+    Generate future pressure information using the flow prediction model.
+
+    Args:
+        p_model: The pressure prediction model.
+        input_window: deque or list with length 10, each element with shape (8,) (pressure)
+        other_window: deque or list with length 10, each element with shape (9,) (pos + speed + acc)
+        action_window: list with length 10, each element with shape (1, 10, 3) (acc)
+        device: torch.device.
+    Returns:
+        _future_state: np.ndarray with shape (10, 14) (pos + speed + pressure)
+    """
+    _future_state = []
+    for i in range(len(action_window)):
+        future_action_seq = action_window[i]  # (1, 10, 3)
+        outputs = predict_pressure(p_model, input_window, other_window, future_action_seq, device)  # (1, 10, 14)
+        last_state = outputs[0, -1, :]
+        last_state[0], last_state[1] = (target[0] - last_state[0])/(norm_range), (target[1] - last_state[1])/(norm_range)
+        _future_state.append(last_state)  # (14,)
+    _future_state = np.stack(_future_state, axis=0)  # (10, 14)
+    return _future_state
 
 
 def train(model_id, render_mode=None, checkpoint_path=None):
@@ -35,122 +162,105 @@ def train(model_id, render_mode=None, checkpoint_path=None):
 
     ####### 训练环境变量设置 #######
     # 环境名称，用于保存
-    env_name = 'Flow_env_HRL'
+    state_dim_mode = 14
+    env_name = f'Position_Predict_Flow_env_dim_{state_dim_mode}'
+
+    ####### 预测模型加载 #######
+    p_model_path = "./p_predict/0731_id15.pth"
+    p_hidden_size = 256
+    p_num_layers = 2
+    p_output_dim = 14
+    p_pred_steps = 10
+    p_model = load_model(p_model_path, p_hidden_size, p_num_layers, p_output_dim, p_pred_steps, device)
+
 
     # 判断动作空间是否连续
     # continuous action space; else discrete
-    has_continuous_action_space_high = False
-    
+    has_continuous_action_space = True
 
+    # 一个episode中的最大时间步数,存在环境时间限制时,最大时间步应该大于环境时间限制
     # max time_steps in one episode
     max_steps = 300
     max_ep_len = max_steps + 20
-    hl_steps = 10
 
     # 结束训练的总训练步数
     # break training loop if timesteps > max_training_timesteps
-    # max_training_timesteps = int(8e5)
-    max_training_timesteps = int(4e5)
+    max_training_timesteps = int(8e5)
 
-    #########
+    # 打印/保存episode奖励均值
     # Note : print/log frequencies should be more than max_ep_len
     # print avg reward in the interval (in num timesteps)
-    # print_freq = max_ep_len * 5
-    print_freq = max_ep_len
-    #########
-
-    #########
+    print_freq = max_ep_len * 5
     # log avg reward in the interval (in num timesteps)
-    # log_freq = max_ep_len * 5
-    log_freq = max_ep_len
-    #########
-
-    #########
-    # saving frequent
-    # save_model_freq = int(1e4)
-    save_model_freq = int(2e3)
-    #########
-
-
-    # starting std for action distribution (Multivariate Normal)
-    action_std = 0.5  
-    # set std for action distribution when testing(low_level controller)
-    action_std_4_test = 0.04
-    # linearly decay action_std (action_std = action_std - action_std_decay_rate)
-    action_std_decay_rate = 0.02  
-    # minimum action_std (stop decay after action_std <= min_action_std)
-    min_action_std = 0.1
-
-    #########  
-    # action_std decay frequency (in num timesteps)
-    # action_std_decay_freq = int(5e4)
-    # action_std_decay_freq = int(1e4)
-    action_std_decay_freq = int(5e3)
-    #########
-
-    #########
-    # update policy every n timesteps
-    # update_timestep = max_ep_len * 10
-    update_timestep = max_ep_len * 2
-    #########   
+    log_freq = max_ep_len * 5
+    # 存储模型间隔
+    save_model_freq = int(1e4)
+    # 初始方差
+    action_std = 0.5  # starting std for action distribution (Multivariate Normal)
+    # 方差更新缩减值
+    action_std_decay_rate = 0.02  # linearly decay action_std (action_std = action_std - action_std_decay_rate)
+    # 最小方差
+    min_action_std = 0.1  # minimum action_std (stop decay after action_std <= min_action_std)
+    # 方差缩减频率
+    action_std_decay_freq = int(5e4)  # action_std decay frequency (in num timesteps)
     #####################################################
 
     ################ 强化学习超参数设置 ################
-    # update epochs
+    # 网络更新频率
+    # update policy every n timesteps
+    update_timestep = max_ep_len * 10
+    # K_epochs = 10
     K_epochs = 40
-    # clip rate for PPO
-    eps_clip = 0.2
-    # discount factor γ
-    gamma = 0.99  
-    # learning rate for actor network
-    lr_actor = 0.0001
-    # learning rate for critic network  
-    lr_critic = 0.0002  
-    # set random seed if required (0 = no random seed)
-    random_seed = 0  
-    # fixed flow
-    # random_seed = 1
-    # training ID, change this to prevent overwriting weights in same env_name folder
-    pretrained_model_ID = model_id  
+
+    eps_clip = 0.2  # clip rate for PPO
+    gamma = 0.99  # discount factor γ
+
+    lr_actor = 0.0001  # learning rate for actor network
+    lr_critic = 0.0002  # learning rate for critic network
+
+    flow_seed = 0  # set flow seed if required (0 = no random seed)
+    # flow_seed = 1
+
+    true_random = False
+    if true_random:
+        random_seed = 0
+    else:
+        random_seed = 1
+
+    pretrained_model_ID = model_id  # 训练ID, change this to prevent overwriting weights in same env_name folder
     #####################################################
 
     parser_1 = argparse.ArgumentParser()
     args_1, unknown = parser_1.parse_known_args()
     args_1.action_interval = 10
 
-    ###################### 预加载模型 ######################
-    has_continuous_action_space = True
-    action_std_4_test = 0.04
-    low = np.array([-20.0, -20.0, -5.0], dtype=np.float32)
-    high = np.array([20.0, 20.0, 5.0], dtype=np.float32)
-    action_space = Box(low=low, high=high, shape=(3,), dtype=np.float32)
-    action_output_scale = (high - low) / 2.0
-    action_output_bias = (high + low) / 2.0
-    ppo_agent_0 = Classic_PPO(14, 3, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-                        has_continuous_action_space,
-                        action_std_init=action_std_4_test, continuous_action_output_scale=action_output_scale,
-                        continuous_action_output_bias=action_output_bias)
-    ppo_agent_0.load_full(ppo_path_0)
-    ppo_agent_1 = ICM_PPO(18, 3, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-                        has_continuous_action_space,
-                        action_std_init=action_std_4_test, continuous_action_output_scale=action_output_scale,
-                        continuous_action_output_bias=action_output_bias, icm_alpha=20)
-    ppo_agent_1.load_full_icm(ppo_path_1)
+    # _start = np.array([float(220), float(64)])
+    # _target = np.array([float(64), float(64)])
+    # env = flow_field_env_2.foil_env(args_1, max_step=max_steps, start_center=_start, target_center=_target)
 
+    # _start = np.array([float(220), float(64)])
+    # _target = np.array([float(64), float(64)])
+    # random_range = 56
 
-    _start = np.array([float(220), float(64)])
-    _target = np.array([float(64), float(64)])
-    env = train_env_separate.foil_env(args_1, max_step=max_steps, start_center=_start, target_center=_target, _random_range=56, _init_flow_num=random_seed, model_0=ppo_agent_0, model_1=ppo_agent_1)
+    _start = np.array([float(240), float(64)])
+    _target = np.array([float(160), float(64)])
+    random_range = 32
+    env = train_env_basic_2.foil_env(args_1, max_step=max_steps, start_center=_start, target_center=_target, _random_range=random_range, _init_flow_num=flow_seed, _pos_normalize=True, _state_dim=state_dim_mode, 
+    _is_random = true_random, _set_random=random_seed, u_range=15.0, v_range=15.0)
 
+    # env = train_env_basic_3.foil_env(args_1, max_step=max_steps, start_center=_start, target_center=_target, _random_range=56, _init_flow_num=flow_seed, _pos_normalize=True, _state_dim=state_dim_mode, 
+    # _is_random = true_random, _set_random=random_seed, u_range=15.0, v_range=15.0)
 
     # 状态空间
     # state space dimension
     state_dim = env.observation_space.shape[0]
+    # predict future state
+    expand_dim = state_dim + 6 * 8
 
     # 动作空间
     action_output_scale = np.array([])
     action_output_bias = np.array([])
-    if has_continuous_action_space_high:
+    if has_continuous_action_space:
         # action space dimension
         action_dim = env.action_space.shape[0]
         # 输出动作缩放的相关内容
@@ -161,6 +271,8 @@ def train(model_id, render_mode=None, checkpoint_path=None):
         # 离散动作空间，输出可选的动作数
         action_dim = env.action_space.n
 
+    ###################### 保存训练信息 ######################
+    # log files for multiple runs are NOT overwritten
 
     ###################### 强化学习方法文件夹 ######################
     log_dir = "PPO_logs"
@@ -179,7 +291,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     ###################### 训练过程记录文件 ######################
     rl_method = '/PPO'
     ######################
-    log_f_name = log_dir + rl_method + env_name + "_log_" + str(pretrained_model_ID) + ".csv"
+    log_f_name = log_dir + rl_method + env_name + "_log_" + str(pretrained_model_ID) + "_seed_" + str(random_seed) + ".csv"
 
     print("current logging model ID for " + env_name + " : ", pretrained_model_ID)
     print("logging at : " + log_f_name)
@@ -243,7 +355,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     print("state space dimension : ", state_dim)
     print("action space dimension : ", action_dim)
     print("--------------------------------------------------------------------------------------------")
-    if has_continuous_action_space_high:
+    if has_continuous_action_space:
         print("Initializing a continuous action space policy")
         print("--------------------------------------------------------------------------------------------")
         print("starting std of action distribution : ", action_std)
@@ -263,24 +375,23 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     if random_seed:
         print("--------------------------------------------------------------------------------------------")
         print("setting random seed to ", random_seed)
-        torch.manual_seed(random_seed)
-        np.random.seed(random_seed)
+        # torch.manual_seed(random_seed)
+        # np.random.seed(random_seed)
     print("============================================================================================")
     #####################################################
 
     ################# training procedure ################
     # initialize RL agent
     # ppo_agent = HJB_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-    #                     has_continuous_action_space_high, delta_t=env.dt, action_std_init=action_std,
+    #                     has_continuous_action_space, delta_t=env.dt, action_std_init=action_std,
     #                     continuous_action_output_scale=action_output_scale,
     #                     continuous_action_output_bias=action_output_bias)
-    ppo_agent = Classic_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-                            has_continuous_action_space_high,
+    ppo_agent = Classic_PPO(expand_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+                            has_continuous_action_space,
                             action_std, continuous_action_output_scale=action_output_scale,
                             continuous_action_output_bias=action_output_bias)
-    # icm_alpha的调整
     # ppo_agent = ICM_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-    #                     has_continuous_action_space_high,
+    #                     has_continuous_action_space,
     #                     action_std, continuous_action_output_scale=action_output_scale,
     #                     continuous_action_output_bias=action_output_bias, icm_alpha=200)
 
@@ -346,73 +457,98 @@ def train(model_id, render_mode=None, checkpoint_path=None):
     print("Started training at (GMT) : ", start_time)
     print("============================================================================================")
     icm_ratio = 1
-    # High-Level Steps
-    hl_time_step = 0  
+    
+    # =====================================
+    # fixed action sequence
+    _acc = 15.0
+    theta_choices = [i * np.pi / 4 for i in range(8)]  # 0, π/4, π/2, ..., 7π/4
+    action_window = []
+    for theta in theta_choices:
+        a_x = _acc * np.cos(theta)
+        a_y = _acc * np.sin(theta)
+        a_w = 0.0
+        _action = [[a_x, a_y, a_w] for _ in range(10)]
+        action_window.append(_action)
+    action_window = np.array(action_window)   # (8, 10, 3)
+    # =====================================
+
+    warmup_steps = max_training_timesteps * 0.2
+
     # training loop
     while time_step <= max_training_timesteps:
-        # last_action
-        current_ep_return = 0
-        action_last = 1
-        episode_t = 0
-        done = False
-        _obstacle_detect = False
+        input_window = deque(maxlen=10)
+        other_window = deque(maxlen=10)
+
         state, info = env.reset()
-        agent_position = env.agent_pos
-        old_distance_2_target = env.d_2_target
-        old_distance_2_barricade = env._old_dis_2_barricade
-        distance_2_target = env.d_2_target
-        distance_2_barricade = env._old_dis_2_barricade
-        print("position_reset:", agent_position)
-        while not done and episode_t < max_ep_len:
-            # === Get High-Level Selector State ===
-            action = ppo_agent.select_action(state)
-            hl_time_step += 1
-            cumulative_reward = 0.0
-            # === Run Low-Level Controller ===
-            ll_step = 0
-            while ll_step < hl_steps:
-                state, reward, terminated, truncated, info = env.step(action)
-                done = terminated or truncated
-                # obstacle detected
-                _obstacle_detect = env.safe_range_flag
-                distance_2_target = env.d_2_target
-                distance_2_barricade = env._old_dis_2_barricade
-                agent_position = env.agent_pos
-                time_step += 1
-                episode_t += 1
-                ll_step += 1
-                if terminated:
-                    # success reward
-                    cumulative_reward += 100.0
-                elif truncated:
-                    # fail punish
-                    cumulative_reward += -100.0
-                else:
-                    # time punish
-                    cumulative_reward -= 1.0
-                    if _obstacle_detect:
-                        cumulative_reward += (distance_2_barricade - old_distance_2_barricade)
-                old_distance_2_barricade = distance_2_barricade 
-                if done or _obstacle_detect:
-                    break
-            # === Save High-Level State ===
-            if abs(action_last - action) > 0:
-                cumulative_reward -= 5.0
-            cumulative_reward += old_distance_2_target - distance_2_target
-            current_ep_return += cumulative_reward
-            ppo_agent.buffer.rewards.append(cumulative_reward)
+        pressure_now = np.array([info["pressure_1"], info["pressure_2"], info["pressure_3"], info["pressure_4"],info["pressure_5"], info["pressure_6"], info["pressure_7"], info["pressure_8"]], dtype=np.float32)
+        speed_now = np.array([info["vel_x"], info["vel_y"], info["vel_angle"]], dtype=np.float32)
+        position_now = np.array([info["pos_x"], info["pos_y"], info["angle"]], dtype=np.float32)
+
+        # 填充窗口
+        initial_action = np.zeros(3, dtype=np.float32)
+        current_other = np.concatenate([position_now, speed_now, initial_action], axis=-1)
+        for _ in range(10):
+            input_window.append(pressure_now.copy())
+            other_window.append(current_other.copy())
+
+        # ========= predict state =========
+        if time_step < warmup_steps:
+            _future_pressure = np.zeros((8, 6), dtype=np.float32)
+        else:
+            _future_pressure = get_future_pressure_batch(p_model, input_window, other_window, action_window, device, env.target_position, env.max_detect_dis + env.window_r/2)
+            _future_pressure = _future_pressure[:, :6]  # 只保留前6个状态维度（位置 + 速度）
+
+        # ========= expand state =========
+        _expand_state = np.concatenate([state, _future_pressure.flatten()], axis=0)
+        
+        current_ep_return = 0
+
+        for t in range(1, max_ep_len + 1):
+            # a_t
+            action = ppo_agent.select_action(_expand_state) 
+            # ========= 更新滑动窗口 =========
+            # (s_t, a_t)
+            current_other = np.concatenate([position_now, speed_now, action], axis=-1)
+            input_window.append(pressure_now.copy())
+            other_window.append(current_other.copy())    
+
+            # s_t+1
+            state, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            pressure_now = np.array([info["pressure_1"], info["pressure_2"], info["pressure_3"], info["pressure_4"],info["pressure_5"], info["pressure_6"], info["pressure_7"], info["pressure_8"]], dtype=np.float32)
+            speed_now = np.array([info["vel_x"], info["vel_y"], info["vel_angle"]], dtype=np.float32)
+            position_now = np.array([info["pos_x"], info["pos_y"], info["angle"]], dtype=np.float32)
+
+            # ========= predict state =========
+            if time_step < warmup_steps:
+                _future_pressure = np.zeros((8, 6), dtype=np.float32)
+            else:
+                _future_pressure = get_future_pressure_batch(p_model, input_window, other_window, action_window, device, env.target_position, env.max_detect_dis + env.window_r/2)
+                _future_pressure = _future_pressure[:, :6]  # 只保留前6个状态维度（位置 + 速度）
+
+            # ========= expand state =========
+            _expand_state = np.concatenate([state, _future_pressure.flatten()], axis=0)
+
+            # saving reward and is_terminals
+            ppo_agent.buffer.rewards.append(reward)
             ppo_agent.buffer.is_terminals.append(done)
-            old_distance_2_target = distance_2_target
-            action_last = action
+
             # saving next_state
             # state_next = torch.tensor(state, device=device, dtype=torch.float32)
-            # ppo_agent.buffer.next_states.append(state_next)
+            state_next = torch.tensor(_expand_state, device=device, dtype=torch.float32)
+            ppo_agent.buffer.next_states.append(state_next)
 
-            # === Update High-Level State ===
-            if hl_time_step % update_timestep == 0:
-                # return per episode
+            # time_step不断增加，不会减少
+            time_step += 1
+            current_ep_return += reward
+
+            # update RL agent
+            # 模型检查更新
+            if time_step % update_timestep == 0:
+                # 计算上一个model的平均return per episode
                 cur_model_avg_return = cur_model_running_return / cur_model_running_episodes
                 if cur_model_avg_return > max_model_avg_return:
+                    # 保存更好的模型
                     print("Better Model.")
                     checkpoint_path = directory + f"best_model_time_step{time_step}_std{ppo_agent.action_std}.pth"
                     print("saving model at : " + checkpoint_path)
@@ -434,12 +570,12 @@ def train(model_id, render_mode=None, checkpoint_path=None):
                 ############################################################
 
             # if continuous action space; then decay action std of output action distribution
-            if has_continuous_action_space and hl_time_step % action_std_decay_freq == 0:
+            if has_continuous_action_space and time_step % action_std_decay_freq == 0:
                 # 每action_std_decay_freq步，降低一次网络的初始化方差
                 action_std = ppo_agent.decay_action_std(action_std_decay_rate, min_action_std)
 
             # log in logging file， 多个episode进行一次记录，记录的是这几个episode的avg return
-            if hl_time_step % log_freq == 0:
+            if time_step % log_freq == 0:
                 # log average return till last episode
                 log_avg_return = log_running_return / log_running_episodes
                 log_avg_return = round(log_avg_return, 4)
@@ -449,7 +585,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
                 log_running_episodes = 0
 
             # printing average reward
-            if hl_time_step % print_freq == 0:
+            if time_step % print_freq == 0:
                 # print average reward till last episode
                 print_avg_return = print_running_return / print_running_episodes
                 print_avg_return = round(print_avg_return, 2)
@@ -461,7 +597,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
                 print_running_episodes = 0
 
             # save model weights
-            if hl_time_step % save_model_freq == 0:
+            if time_step % save_model_freq == 0:
                 print("--------------------------------------------------------------------------------------------")
                 checkpoint_path = directory + f"timestep_{time_step}_std_{ppo_agent.action_std:.2f}.pth"
                 print("saving model at : " + checkpoint_path)
@@ -479,8 +615,9 @@ def train(model_id, render_mode=None, checkpoint_path=None):
             if done:
                 print(colored(f"**** Episode Reward:{current_ep_return} **** ", "yellow"))
                 break
-            if episode_t == max_ep_len:
+            if t == max_ep_len:
                 print(colored("**** Episode Terminated **** Reaches Training Episode Time limit.", 'blue'))
+
         print_running_return += current_ep_return
         print_running_episodes += 1
 
@@ -493,6 +630,7 @@ def train(model_id, render_mode=None, checkpoint_path=None):
         i_episode += 1
 
     log_f.close()
+    # env.close()
     env.terminate()
 
     # print total_step training time

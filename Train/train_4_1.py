@@ -6,6 +6,9 @@ import numpy as np
 from datetime import datetime
 from termcolor import colored
 import time
+import torch.nn as nn
+from math import *
+from collections import deque
 
 ####### PPO_METHOD #######
 import icm_ppo
@@ -26,13 +29,147 @@ device = my_ppo_net_1.device
 # device = hjbppo.device
 # device = icm_ppo.device
 
+####### PREDICTOR #######
+class Seq2SeqPredictor(nn.Module):
+    def __init__(self, input_dim=17, condition_dim=3, output_dim=14, hidden_size=128, lstm_layers=2, pred_steps=5, teacher_forcing=True):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.lstm_layers = lstm_layers
+        self.pred_steps = pred_steps
+        self.output_dim = output_dim
+        self.teacher_forcing = teacher_forcing
 
-# def compute_relative_subgoal(angle, r):
-#     angle_1 = angle + np.pi/2
-#     dx = r * np.cos(angle_1)
-#     dy = r * np.sin(angle_1)
-#     return dx.item(), dy.item()
+        # Encoder: 处理 (pressure + vel + acc)
+        self.encoder_input_fc = nn.Linear(input_dim, hidden_size)
+        self.encoder_lstm = nn.LSTM(
+            input_size=hidden_size,
+            hidden_size=hidden_size,
+            num_layers=lstm_layers,
+            batch_first=True
+        )
 
+        # Decoder: 输入 (pred_pressure_prev + future_acc)
+        self.decoder_input_fc = nn.Linear(output_dim + condition_dim, hidden_size)
+        self.decoder_lstm = nn.LSTM(
+            input_size=hidden_size,
+            hidden_size=hidden_size,
+            num_layers=lstm_layers,
+            batch_first=True
+        )
+        self.decoder_output_fc = nn.Linear(hidden_size, output_dim)
+
+        self._initialize_weights()
+
+    def forward(self, past_pressure, past_agent, future_acc, target_state=None):
+        """
+        past_pressure: (B, T_in, 8)
+        past_agent(pos speed acc): (B, T_in, 9)
+        future_acc: (B, T_pred, 3)
+        target_state(pos speed pressure): (B, T_pred, 14) for teacher forcing
+        """
+        B, T_in, _ = past_pressure.shape
+        T_pred = future_acc.shape[1]
+
+        # ===== Encoder =====
+        enc_input = torch.cat([past_agent, past_pressure], dim=-1)  # (B, T_in, 17)
+        enc_input = self.encoder_input_fc(enc_input)                # (B, T_in, hidden_size)
+        h0 = torch.zeros(self.lstm_layers, B, self.hidden_size, device=past_pressure.device)
+        c0 = torch.zeros(self.lstm_layers, B, self.hidden_size, device=past_pressure.device)
+        _, (h_n, c_n) = self.encoder_lstm(enc_input, (h0, c0))
+
+        # ===== Decoder =====
+        preds = []
+        decoder_input = torch.zeros(B, self.output_dim, device=past_pressure.device)  # 初始输入为零向量
+
+        h_dec, c_dec = h_n, c_n
+        for t in range(T_pred):
+            cond_acc = future_acc[:, t, :]                                        # (B, 3)
+            dec_input = torch.cat([decoder_input, cond_acc], dim=-1)              # (B, 14+3)
+            dec_input = self.decoder_input_fc(dec_input).unsqueeze(1)             # (B, 1, hidden_size)
+
+            dec_output, (h_dec, c_dec) = self.decoder_lstm(dec_input, (h_dec, c_dec))
+            pred_p = self.decoder_output_fc(dec_output.squeeze(1))                # (B, 14)
+
+            preds.append(pred_p.unsqueeze(1))                                     # [(B, 1, 14), ...]
+
+            if self.teacher_forcing and self.training and target_state is not None:
+                decoder_input = target_state[:, t, :]
+            else:
+                decoder_input = pred_p
+
+        preds = torch.cat(preds, dim=1)                                           # (B, T_pred, 14)
+        return preds
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LSTM):
+                for name, param in m.named_parameters():
+                    if 'weight_ih' in name:
+                        nn.init.xavier_uniform_(param.data)
+                    elif 'weight_hh' in name:
+                        nn.init.orthogonal_(param.data)
+                    elif 'bias' in name:
+                        nn.init.constant_(param.data, 0)
+
+
+def load_model(model_path, hidden_size, num_layers, output_dim, pred_steps, device):
+    model = Seq2SeqPredictor(input_dim=17, condition_dim=3, output_dim=14, hidden_size=hidden_size, lstm_layers=num_layers, pred_steps=pred_steps, teacher_forcing=False).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    model.eval()
+    return model
+
+def predict_pressure(p_model, input_window, other_window, future_action_seq, device):
+    input_tensor = torch.from_numpy(np.stack(input_window, axis=0)).unsqueeze(0).to(dtype=torch.float32, device=device)  # (1, 5, 8)
+    other_tensor = torch.from_numpy(np.stack(other_window, axis=0)).unsqueeze(0).to(dtype=torch.float32, device=device)  # (1, 5, 9)
+    future_tensor = torch.from_numpy(future_action_seq).unsqueeze(0).to(dtype=torch.float32, device=device)             # (1, 5, 3)
+    with torch.no_grad():
+        outputs = p_model(input_tensor, other_tensor, future_tensor).cpu().numpy() # (1, 5, 14)
+    return outputs
+
+def get_future_pressure_batch(p_model, input_window, other_window, action_window, device, target, norm_range, _pos_norm=True):
+    """
+    Generate future pressure information using the flow prediction model.
+
+    Args:
+        p_model: The pressure prediction model.
+        input_window: deque or list of len 10, each with shape (8,) (pressure).
+        other_window: deque or list of len 10, each with shape (9,) (pos + speed + acc).
+        action_window: list of len 10, each with shape (8, 10, 3) (acc).
+        device: torch.device
+        target: np.ndarray, shape (2,) or (3,), target position (x, y[, angle])
+        norm_range: float, normalization denominator for delta computation.
+        _pos_norm: whether predicted pos is normalized (True means we need to denormalize before computing delta).
+
+    Returns:
+        _future_state: np.ndarray of shape (8, 14), each row: [pos + speed + pressure] with normalized (target - pos)
+    """
+    _future_state = []
+    for i in range(len(action_window)):
+        future_action_seq = action_window[i]  # shape: (8, 10, 3)
+        outputs = predict_pressure(p_model, input_window, other_window, future_action_seq, device)  # shape: (1, T_pred, out_dim)
+
+        last_state = outputs[0, -1, :].copy()  # avoid in-place modification if outputs reused
+
+        if _pos_norm:
+            pos_x = last_state[0] * 160.0
+            pos_y = last_state[1] * 60.0
+        else:
+            pos_x = last_state[0]
+            pos_y = last_state[1]
+
+        last_state[0] = (target[0] - pos_x) / norm_range
+        last_state[1] = (target[1] - pos_y) / norm_range
+
+        _future_state.append(last_state)
+
+    _future_state = np.stack(_future_state, axis=0)  # (8, 14)
+    return _future_state
+
+####### HRL LOW #######
 def compute_subgoal_forward(pos, angle, r):
     # print(f"target angle:{angle.item()}")
     x, y = pos[0], pos[1]
@@ -53,13 +190,32 @@ def subgoal_reached(pos, target, threshold=4.0):
     dy = pos[1] - target[1]
     return np.sqrt(dx**2 + dy**2) < threshold
 
+# def compute_relative_subgoal(angle, r):
+#     angle_1 = angle + np.pi/2
+#     dx = r * np.cos(angle_1)
+#     dy = r * np.sin(angle_1)
+#     return dx.item(), dy.item()
 
+####### HRL Train #######
 def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path_low=None):
     print("============================================================================================")
 
+    ####### 预测模型加载 #######
+    _pos_norm = True
+    _acc_norm = False
+    _expand_pressure = True
+    # p_model_path = "./p_predict/0731_id15.pth"
+    p_model_path = "./p_predict/0801_id16.pth"
+    p_hidden_size = 256
+    p_num_layers = 2
+    p_output_dim = 14
+    p_pred_steps = 10
+    p_model = load_model(p_model_path, p_hidden_size, p_num_layers, p_output_dim, p_pred_steps, device)
+
+
     ####### 训练环境变量设置 #######
     # state_dim_mode = 22
-    state_dim_mode = 14
+    state_dim_mode = 16
 
     # 判断动作空间是否连续
     # continuous action space; else discrete
@@ -147,7 +303,7 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
     # True: train from scratch; False: use pre-trained policy
     # lc_train = True  
     lc_train = False
-    
+
 
     # pre-trained low-level controller
     if _is_head:
@@ -164,7 +320,7 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
     
     # test_mode = True
     test_mode = False
-    
+
     # theta_mode = True
     theta_mode = False
 
@@ -182,26 +338,22 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
         _target = np.array([float(64), float(64)])
         random_range = 56
         _is_normalize = True
-        env_name = f'Flow_env_Upper_dim_{state_dim_mode}_lcforward'
+        env_name = f'P_Flow_env_Upper_dim_{state_dim_mode}_lcforward'
     else:
-        _start = np.array([float(240), float(64)])
-        _target = np.array([float(160), float(64)])
-        random_range = 32
         # _start = np.array([float(240), float(64)])
-        # _target = np.array([float(64), float(64)])
-        # random_range = 56
-        if theta_mode:
-            env_name = f'Flow_env_Upper_dim_{state_dim_mode}_lcalldirection_actiondim1'
-        else:
-            env_name = f'Flow_env_Upper_dim_{state_dim_mode}_lcalldirection_actiondim2'
+        # _target = np.array([float(160), float(64)])
+        # random_range = 32
+        _start = np.array([float(240), float(64)])
+        _target = np.array([float(64), float(64)])
+        random_range = 56
         _is_normalize = True
-
-
-    # env = train_env_upper_2.foil_env(args_1, max_step=max_steps, start_center=_start, target_center=_target, _random_range=random_range, _init_flow_num=flow_seed, _pos_normalize=_is_normalize, _is_test = test_mode, _state_dim=state_dim_mode, 
-    # _is_random = true_random, _set_random=random_seed, u_range=20.0, v_range=20.0, _forward_only=_is_head, _obstacle_avoid=True, _theta_mode = theta_mode)
-
+        if theta_mode:
+            env_name = f'P_Flow_env_Upper_dim_{state_dim_mode}_lcalldirection_actiondim1'
+        else:
+            env_name = f'P_Flow_env_Upper_dim_{state_dim_mode}_lcalldirection_actiondim2'
+    
     env = train_env_upper_2.foil_env(args_1, max_step=max_steps, start_center=_start, target_center=_target, _random_range=random_range, _init_flow_num=flow_seed, _pos_normalize=_is_normalize, _is_test = test_mode, _state_dim=state_dim_mode, 
-    _is_random = true_random, _set_random=random_seed, u_range=15.0, v_range=15.0, _forward_only=_is_head, _obstacle_avoid=True, _theta_mode = theta_mode)
+    _is_random = true_random, _set_random=random_seed, u_range=20.0, v_range=20.0, _forward_only=_is_head, _obstacle_avoid=True, _theta_mode = theta_mode, u_clip=15.0, v_clip=15.0)
 
     # state space dimension
     state_dim = env.observation_space.shape[0]
@@ -343,11 +495,15 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
     
     ################################################################################################################## 
     ################# high_level controller ################
-    ppo_agent = Classic_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+    if _expand_pressure:
+        expand_dim = state_dim + 8 * 14
+    else:
+        expand_dim = state_dim + 8 * 6
+    ppo_agent = Classic_PPO(expand_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
                             has_continuous_action_space,
                             action_std, continuous_action_output_scale=action_output_scale,
                             continuous_action_output_bias=action_output_bias)
-    # ppo_agent = ICM_PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+    # ppo_agent = ICM_PPO(expand_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
     #                     has_continuous_action_space,
     #                     action_std, continuous_action_output_scale=action_output_scale,
     #                     continuous_action_output_bias=action_output_bias, icm_alpha=200)
@@ -451,8 +607,6 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
         lc_print_running_episodes = 0
         lc_log_running_return = 0
         lc_log_running_episodes = 0
-        # lc_cur_model_running_return = 0
-        # lc_cur_model_running_episodes = 0
 
     # write training data
     log_f = open(log_f_name, "a")
@@ -464,6 +618,24 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
 
     ################################################################################################################## 
     ################# Training Procedure ################
+
+    # =====================================
+    # fixed action sequence
+    if _acc_norm:
+        _acc = 1.0
+    else:
+        _acc = 15.0
+    theta_choices = [i * np.pi / 4 for i in range(8)]  # 0, π/4, π/2, ..., 7π/4
+    action_window = []
+    for theta in theta_choices:
+        a_x = _acc * np.cos(theta)
+        a_y = _acc * np.sin(theta)
+        a_w = 0.0
+        _action = [[a_x, a_y, a_w] for _ in range(10)]
+        action_window.append(_action)
+    action_window = np.array(action_window)   # (8, 10, 3)
+    # =====================================
+
     icm_ratio = 1
     subgoal_threshold = 1.0
     if _is_head:
@@ -474,13 +646,35 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
     while time_step <= max_training_timesteps:
     # while hl_time_step <= hl_max_training_timesteps:
         # === 环境初始化 ===
+        input_window = deque(maxlen=10)
+        other_window = deque(maxlen=10)
         state, info = env.reset()
+        pressure_now = np.array([info["pressure_1"], info["pressure_2"], info["pressure_3"], info["pressure_4"],info["pressure_5"], info["pressure_6"], info["pressure_7"], info["pressure_8"]], dtype=np.float32)
+        speed_now = np.array([info["vel_x"], info["vel_y"], info["vel_angle"]], dtype=np.float32)
+        position_now = np.array([info["pos_x"], info["pos_y"], info["angle"]], dtype=np.float32)
+        if _pos_norm:
+            position_now[:2] /= [160.0, 60.0]
         state_14 = env.state_14
         agent_position = env.agent_pos
         prev_state = state.copy()  # 更新上一帧有效状态
         prev_state_14 = state_14.copy()  # 更新上一帧有效状态
         prev_agent_position = agent_position.copy()  # 更新上一帧有效状态
         print("position_reset:", agent_position)
+
+        # 填充窗口
+        initial_action = np.zeros(3, dtype=np.float32)
+        current_other = np.concatenate([position_now, speed_now, initial_action], axis=-1)
+        for _ in range(10):
+            input_window.append(pressure_now.copy())
+            other_window.append(current_other.copy())
+
+        # ========= predict state =========
+        _future_pressure = get_future_pressure_batch(p_model, input_window, other_window, action_window, device, env.target_position, env.max_detect_dis + env.window_r/2, _pos_norm=_pos_norm)
+        if not _expand_pressure:
+            _future_pressure = _future_pressure[:, :6]  # 只保留前6个状态维度（位置 + 速度）
+
+        # ========= expand state =========
+        _expand_state = np.concatenate([state, _future_pressure.flatten()], axis=0)
 
         current_ep_return = 0
         if lc_train:
@@ -501,7 +695,8 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
             # === 高层决策：每 max_ll_steps 步更新一次 ===
             # max_ll_steps = 20
             max_ll_steps = 5
-            high_state = state
+            # high_state = state
+            high_state = _expand_state
             high_action = ppo_agent.select_action(high_state)     # 高层输出目标角度
             high_action = np.clip(high_action, env.low, env.high) # 限制动作范围
             hl_time_step += 1
@@ -547,7 +742,20 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
 
                 # === 执行低层动作 ===
                 low_action = ppo_agent_lc.select_action(low_state)
+                # ========= 更新滑动窗口 =========
+                # (s_t, a_t)
+                if _acc_norm:
+                    current_other = np.concatenate([position_now, speed_now, low_action / 15.0], axis=-1)
+                else:
+                    current_other = np.concatenate([position_now, speed_now, low_action], axis=-1)
+                input_window.append(pressure_now.copy())
+                other_window.append(current_other.copy())  
                 state, reward, terminated, truncated, info = env.step(low_action)
+                pressure_now = np.array([info["pressure_1"], info["pressure_2"], info["pressure_3"], info["pressure_4"],info["pressure_5"], info["pressure_6"], info["pressure_7"], info["pressure_8"]], dtype=np.float32)
+                speed_now = np.array([info["vel_x"], info["vel_y"], info["vel_angle"]], dtype=np.float32)
+                position_now = np.array([info["pos_x"], info["pos_y"], info["angle"]], dtype=np.float32)
+                if _pos_norm:
+                    position_now[:2] /= [160.0, 60.0]
                 agent_position = env.agent_pos
                 state_14 = env.state_14
 
@@ -599,6 +807,12 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
                 t += 1
                 ll_step += 1
                 if done_lc:
+                    # ========= predict state =========
+                    _future_pressure = get_future_pressure_batch(p_model, input_window, other_window, action_window, device, env.target_position, env.max_detect_dis + env.window_r/2, _pos_norm=_pos_norm)
+                    if not _expand_pressure:
+                        _future_pressure = _future_pressure[:, :6]  # 只保留前6个状态维度（位置 + 速度）
+                    # ========= expand state =========
+                    _expand_state = np.concatenate([state, _future_pressure.flatten()], axis=0)
                     break
             
             if lc_train:
@@ -606,8 +820,7 @@ def train(model_id, render_mode=None, checkpoint_path_high=None, checkpoint_path
                 lc_print_running_episodes += 1
                 lc_log_running_return += lc_current_ep_return
                 lc_log_running_episodes += 1
-                # lc_cur_model_running_return += lc_current_ep_return
-                # lc_cur_model_running_episodes += 1
+
 
             # === 混合训练：根据子目标的接近程度 ===
             cumulative_high_reward += 10 * max((relative_dist_to_subgoal - dist_to_subgoal), -2)
