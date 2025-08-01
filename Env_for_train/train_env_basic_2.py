@@ -15,6 +15,7 @@ from math import *
 import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 from matplotlib.patches import Arc
+# Obstacle sensing (in agent-centric coordinates)
 
 
 # Port Check
@@ -27,8 +28,8 @@ class foil_env:
     def __init__(self, config=None, info='', local_port=None, network_port=None,
              target_center=None, target_position=None, start_center=None, 
              start_position=None, max_step=None, _include_flow=False, 
-             _plot_flow=False, _proccess_flow=False, _random_range = 56, _flow_range=16, _init_flow_num=0, _pos_normalize=True, _is_test=False, _is_random = True, _set_random=0,
-             _state_dim=18, u_range=20.0, v_range=20.0, w_range=5.0, _forward_only = True, _obstacle_avoid=False, _is_switch=False, _theta_mode=True, u_clip=20.0, v_clip=20.0, w_clip=5.0):
+             _plot_flow=False, _proccess_flow=False, _random_range = 56, _swich_range = 24, _flow_range=16, _init_flow_num=0, _pos_normalize=True, 
+             _is_test=False, _state_dim=18, _is_random = True, _set_random=0, plot_p = False, u_range=20.0, v_range=20.0, w_range=5.0):
         """
         Basic Info:
         - Expansion Factor: 16
@@ -44,74 +45,39 @@ class foil_env:
         self.y_range = 8 * self.window_r
         self.ellipse_a = self.window_r/4
         self.ellipse_b = self.ellipse_a / 1.5
+        self.switch_range = _swich_range
         self.circles = [
             {"center": (53, 32), "radius": self.window_r/2},
             {"center": (53, 96), "radius": self.window_r/2},
             {"center": (109, 64), "radius": self.window_r/2}
         ]
         self.flow_num = _init_flow_num
-        self._obstacle_avoid = _obstacle_avoid
-        self._is_switch = _is_switch
-        self._theta_mode = _theta_mode
+        self._is_test = _is_test
+        self._is_random = _is_random
+        self._set_random = _set_random
+        self.plot_p = plot_p
         #################################################
 
         ###################################################
         # State Space
         self.include_flow = _include_flow
         self._pos_normalize = _pos_normalize
-        # select mode: train or test
-        self._is_test = _is_test 
-        self._is_random = _is_random
-        self._set_random = _set_random
         self.observation_dim = _state_dim
         self.state = np.zeros(self.observation_dim)
         self.observation_space = Box(low=-1e6, high=1e6, shape=[self.observation_dim])
-        #####################################################
 
-        #####################################################
         # Action Space
-        self.forward_mode = _forward_only
-        if _forward_only:
-            # self.action_dim = 2
-            # low = np.array([0, 6], dtype=np.float32)
-            # high = np.array([np.pi, 12], dtype=np.float32)
-            self.action_dim = 1
-            low = np.array([0], dtype=np.float32)
-            high = np.array([np.pi], dtype=np.float32)
-        else:
-            if self._theta_mode:
-                self.action_dim = 1
-                low = np.array([-np.pi], dtype=np.float32)
-                high = np.array([np.pi], dtype=np.float32)
-            else:
-                self.action_dim = 2
-                low = np.array([-1.0, -1.0], dtype=np.float32)
-                high = np.array([1.0, 1.0], dtype=np.float32)
+        self.action_dim = 3
+
+        ###############################
+        low = np.array([-float(u_range), -float(v_range), -float(w_range)], dtype=np.float32)
+        high = np.array([float(u_range), float(v_range), float(w_range)], dtype=np.float32)
+        ###############################
+
         self.low = low
         self.high = high
         self.action_space = Box(low=low, high=high, shape=(self.action_dim,), dtype=np.float32)
-        #####################################################
 
-        #####################################################
-        # Low-Level Controller
-        self.lc_action_dim = 3
-        lc_low = np.array([-float(u_range), -float(v_range), -float(w_range)], dtype=np.float32)
-        lc_high = np.array([float(u_range), float(v_range), float(w_range)], dtype=np.float32)
-        self.lc_low = lc_low
-        self.lc_high = lc_high
-        self.lc_action_space = Box(low=lc_low, high=lc_high, shape=(self.lc_action_dim,), dtype=np.float32)
-        #####################################################
-
-
-        #####################################################
-        # Max Speed Limit Controller
-        clip_low = np.array([-float(u_clip), -float(v_clip), -float(w_clip)], dtype=np.float32)
-        clip_high = np.array([float(u_clip), float(v_clip), float(w_clip)], dtype=np.float32)
-        self.clip_low = clip_low
-        self.clip_high = clip_high
-        #####################################################
-
-        #####################################################
         # Sim Time
         self.step_counter = 0
         self.steps_default = 300
@@ -120,8 +86,10 @@ class foil_env:
             self.t_step_max = max_step
         else:
             self.t_step_max = self.steps_default
+        
         # Reward
         self.reward = 0
+
         # Done
         self.done = False
         ###################################################
@@ -150,7 +118,6 @@ class foil_env:
         if start_center is not None:
             self.start_default = start_center
         self.target_position = self.target_default
-        self.target_position_lc = self.target_position
         self.start_position = self.start_default
         self._is_fixed_target = True
         self._is_fixed_start = True
@@ -171,17 +138,15 @@ class foil_env:
         # Distance to Target
         self.d_2_target = 0
         self.d_2_target_min = np.inf
-        self._rolls = 0
         self._roll_count = 0
         self._collision_count = 0
-        self._roll_punish = -50
+        self._roll_punish = -20
 
         ############################
         # self.max_detect_dis = 24
         # self._old_dis_2_barricade = 24
         self.max_detect_dis = 24 - self.window_r/2
         self._old_dis_2_barricade = 24 - self.window_r/2
-        self.safe_range_flag = False
         ############################
 
         self.old_direction = 0
@@ -194,10 +159,13 @@ class foil_env:
         # State Record
         # Agent Info
         self.agent_pos_history = []
+        self.pressure_history = []
         self.angle = 0
         self.vel_angle = 0
         self.speed = 0
         self.pressure = []
+        self.pre_pressure = []
+        self.state_14 = []
         # Flow Info
         self.u_flow = []
         self.v_flow = []
@@ -209,8 +177,6 @@ class foil_env:
             self.last_flow_y = np.zeros((2 * self.flow_range, 2 * self.flow_range))
         # Action Info
         self.action = []
-        # Low-Level Controller Info
-        self.state_14 = []
         #########################################################
 
         
@@ -218,7 +184,12 @@ class foil_env:
         # Plot Settings
         self._plot_flow = _plot_flow
         self.frame_pause = 0.03
-        self.fig, self.ax = plt.subplots(figsize=(16, 9))
+        # self.fig, self.ax = plt.subplots(figsize=(16, 9))
+        if self.plot_p:
+            self.fig, (self.ax_env, self.ax_pressure) = plt.subplots(1, 2, figsize=(16, 9))
+        else:
+            self.fig, self.ax_env = plt.subplots(1, 1, figsize=(16, 9))
+            self.ax_pressure = None
         ###########################################################
 
         #############################################################
@@ -229,7 +200,8 @@ class foil_env:
             port = random.randint(6000, 8000)
             if not is_port_in_use(port):
                 break
-
+            # port += 1
+            
         port = port if network_port == None else network_port
         if local_port == None:
             command = (
@@ -246,7 +218,6 @@ class foil_env:
         else:
             self.proxy = ServerProxy(f"http://localhost:{local_port}/")
         
-
         if self._is_random:
             random.seed(None)
         else:
@@ -257,11 +228,12 @@ class foil_env:
     def get_flow_velocity(self):
         """
         Compute the velocity field around the agent and store it in 16x16 grids.
-        All returned values will be clipped to [-2.5, 2.5].
+
+        Parameters:
+        r_large : Half-length of the larger square sensing range
 
         Returns:
-        v_x_grid, v_y_grid : Two numpy arrays where the small square region is filled with 0,
-                            and values clipped to [-2.5, 2.5].
+        v_x_grid, v_y_grid : Two numpy arrays where the small square region is filled with 0.
         """
         v_x = self.u_flow
         v_y = self.v_flow
@@ -293,39 +265,23 @@ class foil_env:
         x_padded = int(x + pad_width)
         y_padded = int(y + pad_width)
 
-        v_x_region = v_x_padded[x_padded - r_large:x_padded + r_large + 1,
+        v_x_region = v_x_padded[x_padded - r_large:x_padded + r_large + 1, 
                                 y_padded - r_large:y_padded + r_large + 1]
-        v_y_region = v_y_padded[x_padded - r_large:x_padded + r_large + 1,
+        v_y_region = v_y_padded[x_padded - r_large:x_padded + r_large + 1, 
                                 y_padded - r_large:y_padded + r_large + 1]
-
         mask = np.ones_like(v_x_region, dtype=bool)
         mask[r_large - a:r_large + a + 1, r_large - a:r_large + a + 1] = False
         v_x_region[~mask] = 0
         v_y_region[~mask] = 0
-
-        # Clip values to [-2.5, 2.5]
-        v_x_region = np.clip(v_x_region, -2.5, 2.5)
-        v_y_region = np.clip(v_y_region, -2.5, 2.5)
-
         return v_x_region[:_cut_range, :_cut_range], v_y_region[:_cut_range, :_cut_range]
 
 
     def clip_action(self, action):
-        # action = np.clip(action, self.lc_low, self.lc_high)
-        action = np.clip(action, self.clip_low, self.clip_high)
+        action = np.clip(action, self.low, self.high)
         return action
     
-    def sense(self,dist):
-        sense_thresh = self.max_detect_dis+self.window_r/2
-        if dist > sense_thresh:
-            return 1.0
-        return dist/ sense_thresh
     
-    def set_lc_target(self, _lc_target):
-        self.target_position_lc = _lc_target
-
     def step(self, action):
-        self.safe_range_flag = False
         ########################
         # 1.1 Step Settings
         self.step_counter += 1
@@ -338,6 +294,7 @@ class foil_env:
         angle_norm = self.old_angle
         direction = self.old_direction
         self.action = action
+        # pos_cur = self.agent_pos
         ########################
 
         ########################
@@ -368,12 +325,15 @@ class foil_env:
         self.speed = sqrt(state_1[0]**2 + state_1[1]**2)
         self.vel_angle = abs(state_1[2]) # [1e-2, 1e-1]
         self.pressure = state_1[6:14]
+        if self.plot_p:
+            self.pressure_history.append(self.pressure.copy())
         ########################
 
         ########################################################################################
         # Distance to Target
         d = np.linalg.norm(self.agent_pos - self.target_position)
         ########################################################################################
+
 
         ########################################################################################
         # obstacle distance (filtered by ±90° within ship heading direction, local ship coords)
@@ -439,7 +399,6 @@ class foil_env:
             direction = 0
             angle_rad = np.pi
         else:
-            self.safe_range_flag = True
             # sort by distance
             _barricade_states.sort(key=lambda x: x[0])
             closest_distance = _barricade_states[0][0]
@@ -480,48 +439,21 @@ class foil_env:
         angle_norm = angle_rad / np.pi
         ########################################################################################
 
-        ########################################################################################
-        x_min, x_max = 4, self.x_range - 4
-        y_min, y_max = 4, self.y_range - 4
-        x, y = agent_pos
-        dist_left = x - x_min
-        dist_right = x_max - x
-        dist_bottom = y - y_min
-        dist_top = y_max - y
-
-        state_border = np.array([
-            self.sense(dist_left),
-            self.sense(dist_right),
-            self.sense(dist_bottom),
-            self.sense(dist_top)
-        ], dtype=np.float32)
-        ########################################################################################
-
-        ########################
-        # Low-Level Controller State
-        state_2[3], state_2[4] = self.target_position[0] - state_2[3], self.target_position[1] - state_2[4]
-        self.state_14 = state_2
-        ########################
         ########################
         # Relative Positon(Target & World Coordinate)
         if self._pos_normalize:
-            near_threshold = self.max_detect_dis + self.window_r/2
-            # === Extra fine-grained relative position ===
-            if d < near_threshold:
-                rel_x = (self.target_position[0] - state_1[3])
-                rel_y = (self.target_position[1] - state_1[4])
-                near_flag = 1.0
-            else:
-                rel_x = 0.0
-                rel_y = 0.0
-                near_flag = 0.0
-            # === Normalized relative position for base state ===
-            state_1[3], state_1[4] = (self.target_position[0] - state_1[3])/near_threshold, (self.target_position[1] - state_1[4])/near_threshold
+            state_1[3], state_1[4] = (self.target_position[0] - state_1[3])/(self.max_detect_dis+self.window_r/2), (self.target_position[1] - state_1[4])/(self.max_detect_dis+self.window_r/2)
         else:
-            # === Unnormalized relative position for base state ===
             state_1[3], state_1[4] = (self.target_position[0] - state_1[3]), (self.target_position[1] - state_1[4])
         ########################
- 
+
+        ########################
+        # OG state
+        state_2[3], state_2[4] = (self.target_position[0] - state_2[3]), (self.target_position[1] - state_2[4])
+        self.state_14 = state_2
+        ########################
+
+        
         # Step Reward
         #####################################################################################################
         if self.is_out_of_bounds():
@@ -577,47 +509,25 @@ class foil_env:
                 target_reward = 10 * (self.d_2_target - d)
                 angle_reward = 5 * (self.old_angle - angle_norm) * abs(self.old_direction) * abs(direction)
                 roll_swich_punish = -100 * abs(direction - self.old_direction) * abs(self.old_direction) * abs(direction)
-                border_penalty = -50 * np.sum(1.0 - state_border)
                 ########################
 
                 ########################
                 # mixed reward
+                if self.observation_dim == 18 or self.observation_dim == 10:
+                    _reward = -10 * self.dt + target_reward + avoid_penalty + angle_reward + roll_swich_punish
                 if self.observation_dim == 14:
-                    _reward = -50 * self.dt + target_reward
+                    _reward = -10 * self.dt + target_reward
                 if self.observation_dim == 16:
-                    _reward = -50 * self.dt + target_reward + avoid_penalty
-                if self.observation_dim == 18:
-                    if self._obstacle_avoid:
-                        _reward = -50 * self.dt + target_reward + avoid_penalty + angle_reward + roll_swich_punish
-                    else:
-                        _reward = -50 * self.dt + target_reward + border_penalty
-                if self.observation_dim == 20:
-                    _reward = -50 * self.dt + target_reward + avoid_penalty + border_penalty  
-                if self.observation_dim == 22:
-                    _reward = -50 * self.dt + target_reward + 2 * avoid_penalty + angle_reward + roll_swich_punish + border_penalty 
-                if self.observation_dim == 25:
-                    _reward = -50 * self.dt + target_reward + avoid_penalty + angle_reward + border_penalty + roll_swich_punish 
-                    if d < near_threshold:
-                        _reward = -10 * self.dt + 5 * target_reward
+                    _reward = -10 * self.dt + target_reward + 1.6 * avoid_penalty
                 ########################
 
                 ########################
-                # Roll Count & Terminate
+                # Roll Count
                 current_roll_count = self.angle / (2 * pi)
                 full_turns = int(current_roll_count) - int(self._roll_count)
-
                 if full_turns != 0:
-                    self._rolls += 1
-                    print(colored(f"**** Over Roll: {int(self._roll_count)} to {int(current_roll_count)} ****", 'blue'))
+                    print(colored(f"**** Over Roll:{int(self._roll_count)} to {int(current_roll_count)} ****", 'blue'))
                     _reward += abs(full_turns) * self._roll_punish
-
-                    # === too many rolls ===
-                    max_roll_threshold = 5
-                    if self._rolls > max_roll_threshold:
-                        print(colored(f"**** Episode terminated: Over-Roll At: {self.step_counter} ****", 'red'))
-                        _truncated = True
-                        _reward = -500
-
                 self._roll_count = current_roll_count
                 ########################
             #####################################################################################################
@@ -629,27 +539,22 @@ class foil_env:
         self._old_dis_2_barricade = _dis_2_barricade
         self.old_angle = angle_norm
         self.old_direction = direction
-        if self.observation_dim == 14:
+        # self.pre_pressure = self.pressure
+
+        ########################
+        if self.observation_dim == 10:
+            # no pressure
+            self.state = np.hstack([state_1[:6], barricade_state, direction, angle_norm]).astype(np.float32)
+        elif self.observation_dim == 14:
             # only position
             self.state = state_1
-        if self.observation_dim == 16:
+        elif self.observation_dim == 16:
             # barricate sensor
             self.state = np.hstack([state_1, barricade_state]).astype(np.float32)
-        if self.observation_dim == 18:
+        elif self.observation_dim == 18:
             # roll direction guidance
-            if self._obstacle_avoid:
-                self.state = np.hstack([state_1, barricade_state, direction, angle_norm]).astype(np.float32)
-            else:
-                self.state = np.hstack([state_1, state_border]).astype(np.float32)
-        if self.observation_dim == 20:
-            # edge sensor + barricate sensor
-            self.state = np.hstack([state_1, barricade_state, state_border]).astype(np.float32)
-        if self.observation_dim == 22:
-            # edge sensor
-            self.state = np.hstack([state_1, barricade_state, direction, angle_norm, state_border]).astype(np.float32)
-        if self.observation_dim == 25:
-            # near target sensor
-            self.state = np.hstack([state_1, barricade_state, direction, angle_norm, state_border, rel_x, rel_y, near_flag]).astype(np.float32)
+            self.state = np.hstack([state_1, barricade_state, direction, angle_norm]).astype(np.float32)
+        ########################
 
         if self.include_flow:
             self.u_flow = v_x
@@ -685,9 +590,12 @@ class foil_env:
     def _is_in_circles(self, point):
         for circle in self.circles:
             center = np.array(circle["center"])
+
             #############################################
             radius = self.max_detect_dis + 2
+            # radius = self.max_detect_dis + 4
             #############################################
+
             if np.linalg.norm(point - center) < radius:
                 return True
         return False
@@ -705,7 +613,6 @@ class foil_env:
                 return point
 
     def reset(self):
-        self.safe_range_flag = False
         ########################################################################################
         # Step1: Task Reset
         angle_norm = 1
@@ -713,7 +620,6 @@ class foil_env:
         self.step_counter=0
         self.agent_pos_history = []
         self._roll_count = 0
-        self._rolls = 0
         self._collision_count = 0
         self._old_dis_2_barricade = self.max_detect_dis
         _dis_2_barricade = self.max_detect_dis
@@ -744,21 +650,10 @@ class foil_env:
         if not self._is_fixed_target:
             print("Random Target")
             self.target_position = self.generate_point_outside_circles(self.target_default, self.random_range)
-            self.target_position_lc = self.target_position
         if not self._is_fixed_start:
             print("Random Start")
             self.start_position = self.generate_point_outside_circles(self.start_default, self.random_range)
         ########################
-
-        # --- Switch Start and Target ---
-        if self._is_switch:
-            if np.random.rand() < 0.5:
-                print("Swapping start and target")
-                tmp = self.start_position.copy()
-                self.start_position = self.target_position.copy()
-                self.target_position = tmp.copy()
-                self.target_position_lc = self.target_position
-
         print("target_pos:", self.target_position)
         print("start_pos:", self.start_position)
         agent_init_x = self.start_position[0]
@@ -793,6 +688,9 @@ class foil_env:
         self.angle = state_1[5]
         self.speed = sqrt(state_1[0]**2 + state_1[1]**2)
         self.pressure = state_1[6:14]
+        if self.plot_p:
+            # self.pressure_history.append(self.pre_pressure.copy())
+            self.pressure_history.append(np.zeros(8))
         ########################################################################################
 
         ########################################################################################
@@ -896,6 +794,7 @@ class foil_env:
             direction = np.sign(cross)
 
             # Stability filter for near-edge cases
+            # 30 degrees
             # angle_thresh = np.deg2rad(30)
             # if angle_rad < angle_thresh:
             #     direction = 0  
@@ -904,60 +803,18 @@ class foil_env:
         angle_norm = angle_rad / np.pi
         ########################################################################################
 
-        ########################################################################################
-        x_min, x_max = 4, self.x_range - 4
-        y_min, y_max = 4, self.y_range - 4
-        x, y = agent_pos
-        dist_left = x - x_min
-        dist_right = x_max - x
-        dist_bottom = y - y_min
-        dist_top = y_max - y
-
-        state_border = np.array([
-            self.sense(dist_left),
-            self.sense(dist_right),
-            self.sense(dist_bottom),
-            self.sense(dist_top)
-        ], dtype=np.float32)
-        ########################################################################################
-
-
-        ########################
-        # Low-Level Controller State
-        state_2[3], state_2[4] = self.target_position[0] - state_2[3], self.target_position[1] - state_2[4]
-        self.state_14 = state_2
-        ########################
-
         ########################
         # Relative Positon(Target & World Coordinate)
         if self._pos_normalize:
-            near_threshold = self.max_detect_dis + self.window_r/2
-            # === Extra fine-grained relative position ===
-            if d < near_threshold:
-                rel_x = (self.target_position[0] - state_1[3])
-                rel_y = (self.target_position[1] - state_1[4])
-                near_flag = 1.0
-            else:
-                rel_x = 0.0
-                rel_y = 0.0
-                near_flag = 0.0
-            state_1[3], state_1[4] = (self.target_position[0] - state_1[3])/near_threshold, (self.target_position[1] - state_1[4])/near_threshold
+            state_1[3], state_1[4] = (self.target_position[0] - state_1[3])/(self.max_detect_dis+self.window_r/2), (self.target_position[1] - state_1[4])/(self.max_detect_dis+self.window_r/2)
         else:
             state_1[3], state_1[4] = (self.target_position[0] - state_1[3]), (self.target_position[1] - state_1[4])
         ########################
 
         ########################
-        if self._pos_normalize:
-            near_threshold = self.max_detect_dis + self.window_r/2
-            # === Extra fine-grained relative position ===
-            if d < near_threshold:
-                rel_x = (self.target_position[0] - state_1[3])
-                rel_y = (self.target_position[1] - state_1[4])
-                near_flag = 1
-            else:
-                rel_x = 0.0
-                rel_y = 0.0
-                near_flag = 0
+        # OG state
+        state_2[3], state_2[4] = (self.target_position[0] - state_2[3]), (self.target_position[1] - state_2[4])
+        self.state_14 = state_2
         ########################
 
         self.d_2_target = d
@@ -966,27 +823,21 @@ class foil_env:
         self.old_direction = direction
         self._old_dis_2_barricade = _dis_2_barricade
 
-        if self.observation_dim == 14:
+        ########################
+        if self.observation_dim == 10:
+            # no pressure
+            self.state = np.hstack([state_1[:6], barricade_state, direction, angle_norm]).astype(np.float32)
+        elif self.observation_dim == 14:
             # only position
             self.state = state_1
-        if self.observation_dim == 16:
+        elif self.observation_dim == 16:
             # barricate sensor
             self.state = np.hstack([state_1, barricade_state]).astype(np.float32)
-        if self.observation_dim == 18:
+        elif self.observation_dim == 18:
             # roll direction guidance
-            if self._obstacle_avoid:
-                self.state = np.hstack([state_1, barricade_state, direction, angle_norm]).astype(np.float32)
-            else:
-                self.state = np.hstack([state_1, state_border]).astype(np.float32)
-        if self.observation_dim == 20:
-            # edge sensor + barricate sensor
-            self.state = np.hstack([state_1, barricade_state, state_border]).astype(np.float32)
-        if self.observation_dim == 22:
-            # edge sensor
-            self.state = np.hstack([state_1, barricade_state, direction, angle_norm, state_border]).astype(np.float32)
-        if self.observation_dim == 25:
-            # near target sensor
-            self.state = np.hstack([state_1, barricade_state, direction, angle_norm, state_border, rel_x, rel_y, near_flag]).astype(np.float32)
+            self.state = np.hstack([state_1, barricade_state, direction, angle_norm]).astype(np.float32)
+        ########################
+
         
         if self.include_flow:
             self.u_flow = v_x
@@ -1032,39 +883,29 @@ class foil_env:
                 return True
         return False
     
-    # def is_out_of_bounds(self):
-    #     # pseudo-boundary
-    #     _delta = 4
-    #     x_c, y_c = self.agent_pos
-    #     a = self.ellipse_a
-    #     b = self.ellipse_b
-    #     # anticlockwise
-    #     theta = self.state[5]
-    #     # agent coordinate
-    #     vertices = [(a, 0), (-a, 0), (0, b), (0, -b)]
-    #     # world coordinate
-    #     rotated_vertices = []
-    #     for vx, vy in vertices:
-    #         x_rot = x_c + vx * np.cos(theta) - vy * np.sin(theta)
-    #         y_rot = y_c + vx * np.sin(theta) + vy * np.cos(theta)
-    #         rotated_vertices.append((x_rot, y_rot))
-    #     for x, y in rotated_vertices:
-    #         if not (_delta <= x <= self.x_range - _delta and _delta <= y <= self.y_range - _delta):
-    #             print(f"Out of bounds: Agent_pos {x_c, y_c}; Angle {theta}")
-    #             print(f"Steps: {self.step_counter}")
-    #             return True
-    #     return False
-
     def is_out_of_bounds(self):
-        _delta = 4
-        x, y = self.agent_pos
-        if not (_delta <= x <= self.x_range - _delta and _delta <= y <= self.y_range - _delta):
-            print(f"Out of bounds: Agent_pos ({x:.2f}, {y:.2f})")
-            # print(f"Steps: {self.step_counter}")
-            return True
+        # pseudo-boundary
+        _delta = 2
+        x_c, y_c = self.agent_pos
+        a = self.ellipse_a
+        b = self.ellipse_b
+        # anticlockwise
+        theta = self.state[5]
+        # agent coordinate
+        vertices = [(a, 0), (-a, 0), (0, b), (0, -b)]
+        # world coordinate
+        rotated_vertices = []
+        for vx, vy in vertices:
+            x_rot = x_c + vx * np.cos(theta) - vy * np.sin(theta)
+            y_rot = y_c + vx * np.sin(theta) + vy * np.cos(theta)
+            rotated_vertices.append((x_rot, y_rot))
+        for x, y in rotated_vertices:
+            if not (_delta <= x <= self.x_range - _delta and _delta <= y <= self.y_range - _delta):
+                print(f"Out of bounds: Agent_pos {x_c, y_c}; Angle {theta}")
+                # print(f"Steps: {self.step_counter}")
+                return True
         return False
 
-    
     def is_reach_target(self):
         x_c, y_c = self.agent_pos
         x_o, y_o = self.target_position
@@ -1079,8 +920,6 @@ class foil_env:
         y_prime = -dx * np.sin(theta) + dy * np.cos(theta)
         r = 12
         if self._is_test:
-            if (x_prime**2 / a**2 + y_prime**2 / b**2) <= 1:
-                print(f"Success Steps: {self.step_counter}")
             # dx < a and dy < b
             return (x_prime**2 / a**2 + y_prime**2 / b**2) <= 1
         return dx**2 + dy**2 <= r**2
@@ -1112,29 +951,40 @@ class foil_env:
     def _render_frame(self, _save=False):
         if len(self.agent_pos_history) == 0:
             return
-        # clear coordinate
-        ax = self.ax
-        ax.clear()
-        # draw
-        self.plot_env(ax)
-        plt.draw()  
+
+        self.ax_env.clear()
+        if self.ax_pressure is not None:
+            self.ax_pressure.clear()
+
+        self.plot_env(self.ax_env, self.ax_pressure)
+
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
         plt.pause(self.frame_pause)
+
+        # === save ===
         if _save:
             save_path = './model_output/path.png'
-            # make sure path is legal
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            self.fig.savefig(save_path, bbox_inches='tight', dpi=300)
             print(f"Image saved to {save_path}")
 
+    def plot_env(self, ax_env, ax_pressure=None, sample_rate=10):
+        """
+        Plot Environment(flow + trajectory + agent)+ pressure(if needed)
 
+        Parameters:
+            ax_env: matplotlib Axes, plot env
+            ax_pressure: matplotlib Axes, plot pressure changing
+            sample_rate: quiver rate
+        """
 
-    def plot_env(self, ax, sample_rate=10):
+        # === Env Parameters ===
         history = self.agent_pos_history
         start_default = [220, 64]
         target_default = [64, 64]
         start_point = history[0]
         target = self.target_position
-        current_target = self.target_position_lc
         circles = self.circles
         agent_pos = self.agent_pos
         agent_angle = self.angle
@@ -1142,55 +992,50 @@ class foil_env:
         y_range = self.y_range
         flow_x = self.u_flow
         flow_y = self.v_flow
-        speed = self.speed
-        flow_speed = self.flow_speed
 
+        ax = ax_env
         ax.clear()
-        # Plot Flow Speed
+
+        # === Flow Field ===
         if flow_x is not None and flow_y is not None:
             speed_field = np.sqrt(flow_x**2 + flow_y**2)
-
-            # heat map of flow speed
             cmap = mcolors.LinearSegmentedColormap.from_list("red_white_blue", ["blue", "white", "red"])
-            # normalize
             norm = mcolors.Normalize(vmin=np.min(speed_field), vmax=np.max(speed_field))
-            # grid
             x = np.linspace(0, x_range, flow_x.shape[0])
             y = np.linspace(0, y_range, flow_x.shape[1])
             X, Y = np.meshgrid(x, y)
-            # using pcolormesh replace imshow
+
             im = ax.pcolormesh(X, Y, speed_field.T, cmap=cmap, norm=norm, shading='auto', alpha=0.5)
-            # colorbar info
             if not hasattr(ax, "colorbar"):
                 ax.colorbar = plt.colorbar(im, ax=ax, fraction=0.05, label="Speed (m/s)")
 
-            # speed quiver
             sample_rate = max(10, sample_rate)
             x_sample = x[::sample_rate]
             y_sample = y[::sample_rate]
             X_sample, Y_sample = np.meshgrid(x_sample, y_sample)
             sampled_flow_x = flow_x[::sample_rate, ::sample_rate]
             sampled_flow_y = flow_y[::sample_rate, ::sample_rate]
-            ax.quiver(X_sample, Y_sample, sampled_flow_x * 1.5, sampled_flow_y * 1.5, 
-                    scale=100, scale_units='width', color='black', alpha=0.6, zorder=2, 
-                    width=0.002, pivot='middle', headwidth=3, headaxislength=3)
+            ax.quiver(X_sample, Y_sample,
+                    sampled_flow_x * 1.5, sampled_flow_y * 1.5,
+                    scale=100, scale_units='width',
+                    color='black', alpha=0.6, zorder=2,
+                    width=0.002, pivot='middle',
+                    headwidth=3, headaxislength=3)
 
-        # Start
+        # === Start & Target ===
         ax.scatter(*start_point, color='orange', label='Start Point', zorder=5)
-        # Target
         ax.scatter(*target, color='green', label='Target Point', zorder=5)
-        # Current Target
-        ax.scatter(*current_target, color='red', label='Low Level Target Point', zorder=5)
-        # Cylinder
+        ax.add_patch(plt.Circle(target, self.switch_range, color='green', fill=False, linestyle='--'))
+
+        # === Obstacles ===
         for circle in circles:
             ax.add_patch(plt.Circle(circle["center"], circle["radius"], color='red', alpha=0.3))
-            # ax.add_patch(plt.Circle(circle["center"], self.max_detect_dis + self.window_r/2, color='red', fill=False, linestyle='--'))
 
-        agent_x, agent_y = self.agent_pos
+        # === Agent Field of View (Wedge) ===
+        agent_x, agent_y = agent_pos
         radius = self.max_detect_dis
         fov_angle = 180
-
-        angle_deg = np.degrees(self.angle)
+        angle_deg = np.degrees(agent_angle)
         center_angle = (angle_deg + 180) % 360
         start_angle = (center_angle - fov_angle / 2) % 360
         end_angle = (center_angle + fov_angle / 2) % 360
@@ -1203,39 +1048,186 @@ class foil_env:
             alpha=0.2
         )
         ax.add_patch(wedge)
-        
-        # History Trajectory
+
+        # === Trajectory ===
         if history:
             hx, hy = zip(*history)
             ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
 
-        # Random Range
+        # === Random Range (Default circles) ===
         ax.add_patch(plt.Circle(target_default, 56, color='green', fill=False, linestyle='--'))
         ax.add_patch(plt.Circle(start_default, 56, color='orange', fill=False, linestyle='--'))
 
-        # Agent(Ellipse)
-        ellipse_height = circle["radius"]
+        # === Agent Shape (Ellipse) ===
+        if circles:
+            ellipse_height = circles[0]["radius"]
+        else:
+            ellipse_height = 10  # fallback
         ellipse_width = ellipse_height / 1.5
-        ellipse = Ellipse(xy=agent_pos, width=ellipse_height, height=ellipse_width, 
-                            angle= np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4)
+        ellipse = Ellipse(xy=agent_pos, width=ellipse_height, height=ellipse_width,
+                        angle=np.degrees(agent_angle),
+                        color='orange', alpha=0.7, zorder=4)
         ax.add_patch(ellipse)
 
-        # Agent Coordinate
-        axis_length = 10.0
+        # === Agent Local Coordinate (Action Vector) ===
         cos_angle = np.cos(agent_angle)
         sin_angle = np.sin(agent_angle)
-
         ax_local, ay_local = self.action[0], self.action[1]
-        # combine
         global_action_x = ax_local * cos_angle + ay_local * (-sin_angle)
         global_action_y = ax_local * sin_angle + ay_local * cos_angle
-        ax.quiver(agent_pos[0], agent_pos[1], global_action_x/2, global_action_y/2,
-                angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='blue', label="Action")
+        ax.quiver(agent_pos[0], agent_pos[1],
+                global_action_x / 2, global_action_y / 2,
+                angles='xy', scale_units='xy', scale=1,
+                width=0.002, headwidth=2, color='blue', label="Action")
 
-        # Axis
+        # === Axis Config ===
         ax.set_xlim(0, x_range)
         ax.set_ylim(0, y_range)
         ax.set_aspect('equal', adjustable='box')
         ax.grid(True, linestyle='--', alpha=0.5)
         ax.legend()
         ax.set_title("Moving Trajectory")
+
+        # === Pressure Plot (Optional) ===
+        if self.plot_p and ax_pressure is not None:
+            ax_pressure.clear()
+            if hasattr(self, "pressure_history"):
+                pressure_history = np.array(self.pressure_history)  # shape: [time, 8]
+                timesteps = np.arange(len(pressure_history))
+                # plot every single pressure
+                for i in range(pressure_history.shape[1]):
+                    ax_pressure.plot(timesteps, pressure_history[:, i], label=f"P{i}")
+                ax_pressure.set_xlabel("Time Step")
+                ax_pressure.set_ylabel("Pressure")
+                ax_pressure.set_title("Pressure vs Time")
+                ax_pressure.legend()
+                ax_pressure.grid(True, linestyle='--', alpha=0.5)
+
+                
+    # def _render_frame(self, _save=False):
+    #     if len(self.agent_pos_history) == 0:
+    #         return
+    #     # clear coordinate
+    #     ax = self.ax
+    #     ax.clear()
+    #     # draw
+    #     self.plot_env(ax)
+    #     plt.draw()  
+    #     plt.pause(self.frame_pause)
+    #     if _save:
+    #         save_path = './model_output/path.png'
+    #         # make sure path is legal
+    #         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    #         plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    #         print(f"Image saved to {save_path}")
+
+
+    # def plot_env(self, ax, sample_rate=10):
+    #     history = self.agent_pos_history
+    #     start_default = [220, 64]
+    #     target_default = [64, 64]
+    #     start_point = history[0]
+    #     target = self.target_position
+    #     circles = self.circles
+    #     agent_pos = self.agent_pos
+    #     agent_angle = self.angle
+    #     x_range = self.x_range
+    #     y_range = self.y_range
+    #     flow_x = self.u_flow
+    #     flow_y = self.v_flow
+    #     speed = self.speed
+    #     flow_speed = self.flow_speed
+
+    #     ax.clear()
+    #     # Plot Flow Speed
+    #     if flow_x is not None and flow_y is not None:
+    #         speed_field = np.sqrt(flow_x**2 + flow_y**2)
+
+    #         # heat map of flow speed
+    #         cmap = mcolors.LinearSegmentedColormap.from_list("red_white_blue", ["blue", "white", "red"])
+    #         # normalize
+    #         norm = mcolors.Normalize(vmin=np.min(speed_field), vmax=np.max(speed_field))
+    #         # grid
+    #         x = np.linspace(0, x_range, flow_x.shape[0])
+    #         y = np.linspace(0, y_range, flow_x.shape[1])
+    #         X, Y = np.meshgrid(x, y)
+    #         # using pcolormesh replace imshow
+    #         im = ax.pcolormesh(X, Y, speed_field.T, cmap=cmap, norm=norm, shading='auto', alpha=0.5)
+    #         # colorbar info
+    #         if not hasattr(ax, "colorbar"):
+    #             ax.colorbar = plt.colorbar(im, ax=ax, fraction=0.05, label="Speed (m/s)")
+
+    #         # speed quiver
+    #         sample_rate = max(10, sample_rate)
+    #         x_sample = x[::sample_rate]
+    #         y_sample = y[::sample_rate]
+    #         X_sample, Y_sample = np.meshgrid(x_sample, y_sample)
+    #         sampled_flow_x = flow_x[::sample_rate, ::sample_rate]
+    #         sampled_flow_y = flow_y[::sample_rate, ::sample_rate]
+    #         ax.quiver(X_sample, Y_sample, sampled_flow_x * 1.5, sampled_flow_y * 1.5, 
+    #                 scale=100, scale_units='width', color='black', alpha=0.6, zorder=2, 
+    #                 width=0.002, pivot='middle', headwidth=3, headaxislength=3)
+
+    #     # Start
+    #     ax.scatter(*start_point, color='orange', label='Start Point', zorder=5)
+    #     # Target
+    #     ax.scatter(*target, color='green', label='Target Point', zorder=5)
+    #     ax.add_patch(plt.Circle(target, self.switch_range, color='green', fill=False, linestyle='--'))
+    #     # Cylinder
+    #     for circle in circles:
+    #         ax.add_patch(plt.Circle(circle["center"], circle["radius"], color='red', alpha=0.3))
+    #         # ax.add_patch(plt.Circle(circle["center"], self.max_detect_dis, color='red', fill=False, linestyle='--'))
+
+    #     agent_x, agent_y = self.agent_pos
+    #     radius = self.max_detect_dis
+    #     fov_angle = 180
+
+    #     angle_deg = np.degrees(self.angle)
+    #     center_angle = (angle_deg + 180) % 360
+    #     start_angle = (center_angle - fov_angle / 2) % 360
+    #     end_angle = (center_angle + fov_angle / 2) % 360
+    #     wedge = patches.Wedge(
+    #         center=(agent_x, agent_y),
+    #         r=radius,
+    #         theta1=start_angle,
+    #         theta2=end_angle,
+    #         facecolor='orange',
+    #         alpha=0.2
+    #     )
+    #     ax.add_patch(wedge)
+        
+    #     # History Trajectory
+    #     if history:
+    #         hx, hy = zip(*history)
+    #         ax.plot(hx, hy, linestyle='--', color='orange', label='Path')
+
+    #     # Random Range
+    #     ax.add_patch(plt.Circle(target_default, 56, color='green', fill=False, linestyle='--'))
+    #     ax.add_patch(plt.Circle(start_default, 56, color='orange', fill=False, linestyle='--'))
+
+    #     # Agent(Ellipse)
+    #     ellipse_height = circle["radius"]
+    #     ellipse_width = ellipse_height / 1.5
+    #     ellipse = Ellipse(xy=agent_pos, width=ellipse_height, height=ellipse_width, 
+    #                         angle= np.degrees(agent_angle), color='orange', alpha=0.7, zorder=4)
+    #     ax.add_patch(ellipse)
+
+    #     # Agent Coordinate
+    #     axis_length = 10.0
+    #     cos_angle = np.cos(agent_angle)
+    #     sin_angle = np.sin(agent_angle)
+
+    #     ax_local, ay_local = self.action[0], self.action[1]
+    #     # combine
+    #     global_action_x = ax_local * cos_angle + ay_local * (-sin_angle)
+    #     global_action_y = ax_local * sin_angle + ay_local * cos_angle
+    #     ax.quiver(agent_pos[0], agent_pos[1], global_action_x/2, global_action_y/2,
+    #             angles='xy', scale_units='xy', scale=1, width=0.002, headwidth=2, color='blue', label="Action")
+
+    #     # Axis
+    #     ax.set_xlim(0, x_range)
+    #     ax.set_ylim(0, y_range)
+    #     ax.set_aspect('equal', adjustable='box')
+    #     ax.grid(True, linestyle='--', alpha=0.5)
+    #     ax.legend()
+    #     ax.set_title("Moving Trajectory")
